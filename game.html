@@ -1,0 +1,2212 @@
+<!DOCTYPE html>
+<!--
+BOTS VS DRONES. Project notes (vision, rules, decisions, status) live in
+CLAUDE.md at the repo root. Per-section contracts live in each section's banner.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>bots vs drones</title>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<style>
+  #unit-creation { font-family: sans-serif; padding: 1rem; max-width: 32rem; }
+  #unit-creation:not(.unit-creation-active) { display: none; }
+  .unit-creation-form-row {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.3rem 0;
+  }
+  .unit-creation-form-row label { flex: 0 0 6rem; }
+  .unit-creation-form-row input, .unit-creation-form-row select { flex: 1; }
+  .unit-creation-preview { font-weight: bold; margin: 0.5rem 0; }
+  .unit-creation-save { margin: 0.5rem 0 1rem; padding: 0.4rem 0.9rem; }
+  .unit-creation-status { min-height: 1.2rem; margin-bottom: 0.75rem; }
+  .unit-creation-status.error { color: #a00; }
+  .unit-creation-status.ok { color: #076; }
+  .unit-creation-list { margin-bottom: 1rem; }
+  .unit-creation-list-row {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.3rem 0; border-bottom: 1px solid #ddd;
+  }
+  .unit-creation-list-label { flex: 1; }
+  .unit-creation-io { margin-top: 0.75rem; border-top: 1px solid #ccc; padding-top: 0.75rem; }
+  .unit-creation-io textarea {
+    width: 100%; box-sizing: border-box; font-family: monospace; font-size: 0.85em;
+    height: 3.5rem;
+  }
+  .unit-creation-io > div { margin-bottom: 0.5rem; }
+  .unit-creation-continue { margin-top: 0.5rem; padding: 0.5rem 1rem; }
+
+  #buy-phase { font-family: sans-serif; padding: 1rem; max-width: 32rem; }
+  #buy-phase:not(.buy-phase-active) { display: none; }
+  .buy-phase-budget { font-weight: bold; margin-bottom: 0.75rem; }
+  .buy-phase-row {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.35rem 0; border-bottom: 1px solid #ddd;
+  }
+  .buy-phase-label { flex: 1; }
+  .buy-phase-count { min-width: 1.5rem; text-align: center; }
+  .buy-phase-submit { margin-top: 1rem; padding: 0.5rem 1rem; }
+
+  #orders-phase { font-family: sans-serif; padding: 1rem; max-width: 32rem; }
+  #orders-phase:not(.orders-phase-active) { display: none; }
+  .orders-row {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.35rem 0; border-bottom: 1px solid #ddd;
+  }
+  .orders-label { flex: 1; }
+  .orders-submit { margin-top: 1rem; padding: 0.5rem 1rem; }
+
+  #camera-bar {
+    font-family: sans-serif; font-size: 0.9em; padding: 0.4rem 1rem;
+    display: flex; align-items: center; gap: 0.75rem; color: #555;
+  }
+  #camera-bar button { padding: 0.3rem 0.8rem; }
+</style>
+</head>
+<body>
+<div id="unit-creation"></div>
+<div id="buy-phase"></div>
+<div id="orders-phase"></div>
+<div id="camera-bar">
+  <button id="camera-reset" type="button">Commander view</button>
+  <span>Drag to orbit, scroll to zoom.</span>
+</div>
+<div id="viewport" style="width: 100vw; height: 70vh; display: block;"></div>
+<pre id="log" style="font-family: monospace; white-space: pre-wrap; padding: 1rem;"></pre>
+
+<script type="module">
+
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ══════════════════════════════════════════════════════════
+// [10] UTILITIES & RNG — seeded PRNG, vector math, spatial hash grid, small helpers
+// EXPORTS: makeRNG, vAdd, vSub, vScale, vLen, vLenSq, vDist, vDistSq, vNormalize, SpatialHash,
+//          terrainHeight
+// MAY USE:  nothing
+// MUST NOT: reference any other section
+// ══════════════════════════════════════════════════════════
+
+function makeRNG(seed) {
+  // mulberry32 — small, fast, deterministic. Not cryptographic, doesn't need to be.
+  let state = seed >>> 0;
+  return {
+    next() {
+      state |= 0;
+      state = (state + 0x6D2B79F5) | 0;
+      let t = Math.imul(state ^ (state >>> 15), 1 | state);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    },
+    range(min, max) {
+      return min + this.next() * (max - min);
+    },
+    int(maxExclusive) {
+      return Math.floor(this.next() * maxExclusive);
+    },
+  };
+}
+
+function vAdd(a, b) { return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z }; }
+function vSub(a, b) { return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z }; }
+function vScale(a, s) { return { x: a.x * s, y: a.y * s, z: a.z * s }; }
+function vLenSq(a) { return a.x * a.x + a.y * a.y + a.z * a.z; }
+function vLen(a) { return Math.sqrt(vLenSq(a)); }
+function vDistSq(a, b) { return vLenSq(vSub(a, b)); }
+function vDist(a, b) { return Math.sqrt(vDistSq(a, b)); }
+function vNormalize(a) {
+  const len = vLen(a);
+  if (len < 1e-9) return { x: 0, y: 0, z: 0 };
+  return { x: a.x / len, y: a.y / len, z: a.z / len };
+}
+
+class SpatialHash {
+  constructor(cellSize) {
+    this.cellSize = cellSize;
+    this.cells = new Map();
+  }
+
+  _key(x, y, z) {
+    const cx = Math.floor(x / this.cellSize);
+    const cy = Math.floor(y / this.cellSize);
+    const cz = Math.floor(z / this.cellSize);
+    return `${cx},${cy},${cz}`;
+  }
+
+  clear() {
+    this.cells.clear();
+  }
+
+  insert(id, pos) {
+    const key = this._key(pos.x, pos.y, pos.z);
+    let bucket = this.cells.get(key);
+    if (!bucket) {
+      bucket = [];
+      this.cells.set(key, bucket);
+    }
+    bucket.push(id);
+  }
+
+  // Coarse candidate set: everything in the block of cells covering `radius`
+  // around `pos`. Caller still filters by exact distance.
+  queryNearby(pos, radius) {
+    const result = [];
+    const cx = Math.floor(pos.x / this.cellSize);
+    const cy = Math.floor(pos.y / this.cellSize);
+    const cz = Math.floor(pos.z / this.cellSize);
+    const spread = Math.max(1, Math.ceil(radius / this.cellSize));
+    for (let dx = -spread; dx <= spread; dx++) {
+      for (let dy = -spread; dy <= spread; dy++) {
+        for (let dz = -spread; dz <= spread; dz++) {
+          const key = `${cx + dx},${cy + dy},${cz + dz}`;
+          const bucket = this.cells.get(key);
+          if (bucket) result.push(...bucket);
+        }
+      }
+    }
+    return result;
+  }
+}
+
+
+// ---- Terrain height field (2026-09-23 batch) ----
+// A pure, seeded function of (params, x, z) -> ground height. [30] calls it to
+// place bots on the ground and keep drones above it; [70] calls the SAME
+// function to build the terrain mesh — so sim and renderer can never disagree
+// about where the ground is, and [70] never has to reach into [30] for it.
+// params is plain data (JSON-safe): { seed, amplitude, scale, octaves,
+// flatZones: [{ x, z, radius, blend }] }. [10] knows nothing about bases or
+// arenas; a caller that wants flat ground somewhere passes a flat zone.
+//
+// Deliberately built from integer hashing + multiply/add only — no Math.sin —
+// so the result is bit-identical across JS engines (Math.sin isn't guaranteed
+// to be). Same reason the PRNG is mulberry32: lockstep multiplayer and
+// replays need every client to compute the same ground.
+function hash2(ix, iz, seed) {
+  let h = Math.imul(ix | 0, 374761393) ^ Math.imul(iz | 0, 668265263) ^ Math.imul(seed | 0, 0x27d4eb2d);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
+function smooth01(t) { return t * t * (3 - 2 * t); }
+
+function valueNoise2(x, z, seed) {
+  const ix = Math.floor(x), iz = Math.floor(z);
+  const u = smooth01(x - ix), v = smooth01(z - iz);
+  const a = hash2(ix, iz, seed),     b = hash2(ix + 1, iz, seed);
+  const c = hash2(ix, iz + 1, seed), d = hash2(ix + 1, iz + 1, seed);
+  return (a + (b - a) * u) + ((c + (d - c) * u) - (a + (b - a) * u)) * v;
+}
+
+function terrainHeight(params, x, z) {
+  if (!params || !params.amplitude) return 0;
+  let h = 0, amp = 1, norm = 0, freq = 1 / params.scale;
+  const octaves = params.octaves || 1;
+  for (let o = 0; o < octaves; o++) {
+    h += amp * (valueNoise2(x * freq, z * freq, (params.seed + o * 1013) | 0) * 2 - 1);
+    norm += amp;
+    amp *= 0.5;
+    freq *= 2;
+  }
+  h = (h / norm) * params.amplitude;
+  let w = 1;
+  for (const f of params.flatZones || []) {
+    const dx = x - f.x, dz = z - f.z;
+    const d = Math.sqrt(dx * dx + dz * dz);
+    const fw = d <= f.radius ? 0 : d >= f.radius + f.blend ? 1 : smooth01((d - f.radius) / f.blend);
+    if (fw < w) w = fw;
+  }
+  return h * w;
+}
+
+
+// ══════════════════════════════════════════════════════════
+// [20] CONTENT TABLES — unit archetypes, weapons, AI intelligence tiers, cost data
+// EXPORTS: UNIT_TYPES, WEAPONS, AI_TIERS, COSTS, TERRAIN, FACTION_CHASSIS
+// MAY USE:  nothing — pure data, no functions with behaviour, no imports
+// MUST NOT: reference any other section
+// ══════════════════════════════════════════════════════════
+
+// C10 scope note: this section is pure data only, per its contract. Nothing
+// downstream reads from it yet — [30]/[50]/[80] still run on [50]'s
+// PLACEHOLDER_UNIT_SPECS placeholder table until [25] CUSTOM UNIT REGISTRY
+// (next session) wires this in via getUnitType()/listCustomUnits(). That's
+// expected: [20] is "designed, not started" -> "built, not yet consumed" as
+// of this session, per the build order's step 7 split.
+
+// Shared archetype shape (D04), regardless of faction: chassis, hp, speed,
+// weaponId, armor, cost. `chassis` is what distinguishes a bot unit from a
+// drone unit — faction movement differences live in [30]/[70] code, not in
+// extra stats here. `armor` defaults to 0 for bots; it's a priced stat axis
+// but [30] doesn't consume it yet (see [30]'s D04 note) — stored inert here,
+// same as `stance` was from C05 to C09.
+//
+// `cost` on each built-in entry below is hand-authored for now, not derived
+// from the COSTS soft-cap formula — real balance tuning is [85]'s job once
+// it exists. This mirrors how PLACEHOLDER_UNIT_SPECS' costs were hand-picked.
+const UNIT_TYPES = [
+  // — bots (ground) —
+  { id: 'bot_grunt',  name: 'Grunt',       chassis: 'bot',   hp: 100, speed: 6,   weaponId: 'rifle',   armor: 0, cost: 20 },
+  { id: 'bot_scout',  name: 'Scout',       chassis: 'bot',   hp: 55,  speed: 10,  weaponId: 'smg',     armor: 0, cost: 14 },
+  { id: 'bot_tank',   name: 'Tank',        chassis: 'bot',   hp: 220, speed: 3,   weaponId: 'cannon',  armor: 4, cost: 55 },
+  // — drones (flying) —
+  { id: 'drone_interceptor', name: 'Interceptor', chassis: 'drone', hp: 45,  speed: 12, weaponId: 'blaster', armor: 1, cost: 24 },
+  { id: 'drone_bomber',      name: 'Bomber',      chassis: 'drone', hp: 90,  speed: 5,  weaponId: 'missile', armor: 3, cost: 48 },
+  { id: 'drone_swarmer',     name: 'Swarmer',     chassis: 'drone', hp: 20,  speed: 15, weaponId: 'stinger', armor: 0, cost: 11 },
+];
+
+// WEAPONS (D04, schema locked): dmg, range, rateOfFire (shots/sec), targetType
+// ('ground'|'air'|'both' — what the weapon is capable of hitting; a bot
+// carrying an air-capable weapon is anti-air, full stop, per DESIGN.md).
+// `cost` here is a flat authored value standing in for weaponCost(weapon) in
+// the totalCost formula (ARCHITECTURE.md's [20] contract); [25] is where
+// that function actually gets called from — this section just holds the
+// number it'll read.
+//
+// D05/C16 additions (data only — [30] is where these actually get consumed):
+// `accuracy` (hit chance when a shot's target matches this weapon's
+// targetType) and `mismatchAccuracy` (hit chance when it doesn't; unused —
+// but still given an equal-to-accuracy value for documentation clarity — on
+// 'both' weapons, which per D05 always use `accuracy`). `projectileSpeed` is
+// the fixed straight-line speed D05's fire-and-forget projectiles travel at.
+// `splashRadius`/`splashFalloff` (flat fraction) are optional — only cannon
+// and missile carry them; a weapon without them simply has no splash. All
+// values below are hand-authored placeholders, same as every other number in
+// this table — real tuning is [85]'s job.
+const WEAPONS = {
+  rifle:   { dmg: 8,  range: 40, rateOfFire: 1.5, targetType: 'ground', cost: 6,
+             accuracy: 0.85, mismatchAccuracy: 0.45, projectileSpeed: 80 },
+  smg:     { dmg: 4,  range: 25, rateOfFire: 4,   targetType: 'ground', cost: 4,
+             accuracy: 0.80, mismatchAccuracy: 0.40, projectileSpeed: 90 },
+  cannon:  { dmg: 25, range: 60, rateOfFire: 0.5, targetType: 'both',   cost: 16,
+             accuracy: 0.75, mismatchAccuracy: 0.75, projectileSpeed: 50,
+             splashRadius: 8, splashFalloff: 0.4 },
+  blaster: { dmg: 6,  range: 35, rateOfFire: 3,   targetType: 'both',   cost: 8,
+             accuracy: 0.85, mismatchAccuracy: 0.85, projectileSpeed: 100 },
+  missile: { dmg: 20, range: 70, rateOfFire: 0.6, targetType: 'ground', cost: 14,
+             accuracy: 0.70, mismatchAccuracy: 0.30, projectileSpeed: 40,
+             splashRadius: 10, splashFalloff: 0.5 },
+  stinger: { dmg: 3,  range: 20, rateOfFire: 5,   targetType: 'air',    cost: 5,
+             accuracy: 0.90, mismatchAccuracy: 0.40, projectileSpeed: 120 },
+};
+
+// AI_TIERS — unit intelligence, purchasable and shared with AI difficulty
+// (DESIGN.md's "one system, two uses"). Knobs per DESIGN.md: sensor range,
+// retarget interval, nearest-target vs. threat/value scoring, independent
+// fire vs. squad focus-fire, fight-to-death vs. retreat threshold. None of
+// this is consumed by [30] yet — [30] currently has no sensor range, no
+// retarget interval, and no retreat behaviour at all; wiring these in is
+// future work, same inert-until-consumed pattern as `armor` and `stance`
+// were before their activation sessions.
+const AI_TIERS = {
+  reflexive: { name: 'Reflexive', sensorRange: 30,  retargetInterval: 2.0,  scoring: 'nearest', fireMode: 'independent', retreatThreshold: 0,    cost: 0  },
+  trained:   { name: 'Trained',   sensorRange: 45,  retargetInterval: 1.0,  scoring: 'nearest', fireMode: 'independent', retreatThreshold: 0.15, cost: 10 },
+  veteran:   { name: 'Veteran',   sensorRange: 60,  retargetInterval: 0.5,  scoring: 'threat',  fireMode: 'focus',       retreatThreshold: 0.25, cost: 25 },
+  elite:     { name: 'Elite',     sensorRange: 999, retargetInterval: 0.25, scoring: 'threat',  fireMode: 'focus',       retreatThreshold: 0.3,  cost: 50 },
+};
+
+// COSTS — soft-cap tuning constants (D04): cost(stat) = coeff * value^exponent,
+// exponent > 1 for stats prone to being maxed. These are the constants [25]'s
+// costFormula(stats, weapon, intelTier) will read for the *core* per-unit stat
+// axes (hp, speed, armor) when pricing a player-created custom unit — weapon
+// cost and intel-tier cost are separate flat lookups (see WEAPONS/AI_TIERS
+// above), per ARCHITECTURE.md's totalCost = Σ cost(stat axes) + weaponCost +
+// intelTierCost. Numbers below are placeholders pending real balance work in
+// [85] — DECIDED is the shape, not these values.
+const COSTS = {
+  hp:    { coeff: 0.15, exponent: 1.3 },
+  speed: { coeff: 1.0,  exponent: 1.0 },
+  armor: { coeff: 2.5,  exponent: 1.6 },
+};
+
+// FACTION_CHASSIS (2026-09-23) — DESIGN.md §1's "one side fields bots, the
+// other fields drones", made into data. Before this, both commanders bought
+// from the full catalog, so side A could field drones and side B bots. [50]
+// filters each side's buyable catalog by this; nothing else reads it.
+const FACTION_CHASSIS = { A: 'bot', B: 'drone' };
+
+// TERRAIN (2026-09-23) — shape of the battlefield's height field, consumed
+// by [30] (which adds the seed and base flat zones and stores the result on
+// WorldState) and, through WorldState, by [70]. Gentle on purpose: hills are
+// visual and positional only for now — no line of sight, cover, or slope
+// speed — and projectiles still fly straight through them (see [30]).
+// Placeholder values, same as every number in this section.
+const TERRAIN = {
+  amplitude: 9,       // max height above/below the baseline, world units
+  scale: 55,          // feature size of the largest hills
+  octaves: 3,
+  baseFlatRadius: 16, // flat pad around each base
+  baseFlatBlend: 24,  // distance over which the pad blends into hills
+};
+
+// ══════════════════════════════════════════════════════════
+// [25] CUSTOM UNIT REGISTRY — player-created unit types: create, save, load, list
+// EXPORTS: getUnitType, saveCustomUnit, listCustomUnits, loadFromStorage, exportUnit,
+//          importUnit, costFormula
+// MAY USE:  [10] utils, [20] content tables
+// MUST NOT: reference any section [30]+
+// ══════════════════════════════════════════════════════════
+
+// Doc note (not a code change): ARCHITECTURE.md's [20]/[25] contracts both say
+// costFormula's "home TBD — likely [10], stateless". That can't actually work —
+// [10]'s own MUST NOT list forbids referencing any other section, and costFormula
+// needs [20]'s COSTS/WEAPONS/AI_TIERS to do anything. [25] MAY USE [20], so this is
+// the only section that can host it. Building it here; ARCHITECTURE.md's "home TBD"
+// notes on [20] and [25] should be updated to just say [25] the next time DESIGN
+// touches this area.
+
+// localStorage key. Versioned so a future shape change can detect and migrate
+// (or discard) old data instead of silently misreading it.
+const CUSTOM_UNIT_STORAGE_KEY = 'autobattler_custom_units_v1';
+
+// In-memory registry. loadFromStorage() populates this at startup; every mutating
+// call below keeps it and localStorage in sync (DESIGN.md: localStorage is the
+// automatic/convenience path, export/import is the reliable manual path — both
+// read and write the identical definition shape).
+let customUnits = [];
+
+// costFormula(stats, weaponId, intelTierId) — D04's locked shape:
+//   totalCost = Σ coeff_i * value_i^exponent_i (per core stat axis, from [20]'s
+//               COSTS) + WEAPONS[weaponId].cost (flat) + AI_TIERS[intelTierId].cost (flat)
+// `stats` is a plain { hp, speed, armor } object — only axes with an entry in [20]'s
+// COSTS are priced this way; chassis/weaponId aren't stats and are priced through
+// the flat weapon/tier lookups instead. intelTierId is optional: a unit type itself
+// doesn't carry an intel tier (that's chosen separately at buy/loadout time, per
+// [20]'s built-in UNIT_TYPES shape, which has no intelTier field) — callers that
+// just want a unit's base price (no tier attached yet) can omit it and it prices
+// as free, same as AI_TIERS.reflexive's cost of 0.
+function costFormula(stats, weaponId, intelTierId) {
+  let total = 0;
+
+  for (const [statName, value] of Object.entries(stats || {})) {
+    const curve = COSTS[statName];
+    if (!curve) continue; // stat axis with no pricing curve (e.g. chassis) — free
+    total += curve.coeff * Math.pow(value, curve.exponent);
+  }
+
+  const weapon = WEAPONS[weaponId];
+  if (weapon) total += weapon.cost;
+  // else: unknown weaponId — caller's validation should have already caught this;
+  // costFormula itself stays permissive so it can be used for live UI previews
+  // against a partially-filled-out form without throwing.
+
+  if (intelTierId) {
+    const tier = AI_TIERS[intelTierId];
+    if (tier) total += tier.cost;
+  }
+
+  return total;
+}
+
+// Shape check shared by saveCustomUnit and importUnit. Deliberately loose — this
+// is a single-player, client-side registry (DESIGN.md's framing: localStorage/
+// JSON blobs are convenience and backup, not an adversarial boundary) — so this
+// guards against honest mistakes (typos, missing fields) rather than tampering.
+function _validateUnitDef(def) {
+  if (!def || typeof def !== 'object') return 'not an object';
+  if (typeof def.name !== 'string' || def.name.trim() === '') return 'missing name';
+  if (def.chassis !== 'bot' && def.chassis !== 'drone') return 'chassis must be "bot" or "drone"';
+  if (typeof def.hp !== 'number' || def.hp <= 0) return 'hp must be a positive number';
+  if (typeof def.speed !== 'number' || def.speed <= 0) return 'speed must be a positive number';
+  if (typeof def.armor !== 'number' || def.armor < 0) return 'armor must be a non-negative number';
+  if (!WEAPONS[def.weaponId]) return `unknown weaponId "${def.weaponId}"`;
+  if (typeof def.cost !== 'number' || def.cost < 0) return 'cost must be a non-negative number';
+  return null; // valid
+}
+
+function _persist() {
+  try {
+    localStorage.setItem(CUSTOM_UNIT_STORAGE_KEY, JSON.stringify(customUnits));
+  } catch (err) {
+    // localStorage can throw (quota, private-mode, file:// origin flakiness per
+    // DESIGN.md) — this is exactly why export/import exists as the backup path.
+    // Registry stays correct in memory for the rest of this session either way.
+    console.warn('[25] Failed to persist custom units to localStorage:', err);
+  }
+}
+
+function _freshId(name) {
+  const slug = (name || 'unit').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return `custom_${slug || 'unit'}_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e4)}`;
+}
+
+// getUnitType(id) — the single lookup point downstream sections should call
+// instead of indexing UNIT_TYPES directly (ARCHITECTURE.md's [25] contract):
+// built-ins first, then the custom registry. A custom unit and a built-in are
+// shape-identical, so nothing downstream needs to special-case which one it got.
+function getUnitType(id) {
+  const builtIn = UNIT_TYPES.find(u => u.id === id);
+  if (builtIn) return builtIn;
+  return customUnits.find(u => u.id === id) || null;
+}
+
+// saveCustomUnit(def) — def: { id?, name, chassis, hp, speed, weaponId, armor,
+// intelTier? }. `cost` is never taken from the caller — it's always derived here
+// via costFormula, so a saved unit's price can never drift from the current
+// pricing curve by hand-editing a form field. `intelTier` (if given) is used only
+// to compute that price; it is NOT stored on the saved entry, since a UNIT_TYPES-
+// shaped entry has no intelTier field (ARCHITECTURE.md: "identical in shape to a
+// [20] UNIT_TYPES entry") — intel tier is chosen again at loadout time same as
+// for a built-in unit.
+// Returns the saved entry (UNIT_TYPES shape) on success, or null + console.warn
+// on validation failure.
+function saveCustomUnit(def) {
+  if (!def || typeof def !== 'object') {
+    console.warn('[25] saveCustomUnit: not an object');
+    return null;
+  }
+
+  const armor = typeof def.armor === 'number' ? def.armor : 0; // bots default to 0, per D04
+  const cost = costFormula({ hp: def.hp, speed: def.speed, armor }, def.weaponId, def.intelTier);
+
+  let id = def.id;
+  // Reject/replace an id that collides with a built-in — getUnitType checks
+  // built-ins first, so a colliding custom id would be silently unreachable.
+  if (!id || UNIT_TYPES.some(u => u.id === id)) {
+    id = _freshId(def.name);
+  }
+
+  const entry = {
+    id,
+    name: def.name,
+    chassis: def.chassis,
+    hp: def.hp,
+    speed: def.speed,
+    weaponId: def.weaponId,
+    armor,
+    cost,
+  };
+
+  const problem = _validateUnitDef(entry);
+  if (problem) {
+    console.warn(`[25] saveCustomUnit: invalid definition — ${problem}`);
+    return null;
+  }
+
+  const existingIdx = customUnits.findIndex(u => u.id === id);
+  if (existingIdx >= 0) customUnits[existingIdx] = entry; // overwrite (re-save/edit)
+  else customUnits.push(entry);
+
+  _persist();
+  return entry;
+}
+
+// listCustomUnits() — a copy, so callers (AI commander, balance harness, UI)
+// can't mutate the live registry by holding onto the returned array.
+function listCustomUnits() {
+  return customUnits.slice();
+}
+
+// loadFromStorage() — [90] calls this during startup wiring, before any
+// commander or UI touches unit data (ARCHITECTURE.md's [90] contract), so custom
+// units are available from the first buy phase onward. Safe to call more than
+// once (e.g. a future "reload" button) — it just replaces the in-memory array.
+function loadFromStorage() {
+  try {
+    const raw = localStorage.getItem(CUSTOM_UNIT_STORAGE_KEY);
+    if (!raw) { customUnits = []; return customUnits.slice(); }
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) throw new Error('stored value is not an array');
+    // Drop any entry that no longer validates (e.g. a stale shape from a future
+    // version bump) rather than letting one bad entry break the whole load.
+    customUnits = parsed.filter(def => _validateUnitDef(def) === null);
+  } catch (err) {
+    console.warn('[25] Failed to load custom units from localStorage:', err);
+    customUnits = [];
+  }
+  return customUnits.slice();
+}
+
+// exportUnit(id) — JSON blob of one custom unit, for the manual backup/share path
+// (DESIGN.md: file:// localStorage is flaky, and this project's only real version
+// control is manually saved file copies — same reasoning, applied to unit data).
+// Only exports from the custom registry, not built-ins — built-ins already live
+// in [20]'s source and don't need a personal backup path.
+function exportUnit(id) {
+  const entry = customUnits.find(u => u.id === id);
+  if (!entry) {
+    console.warn(`[25] exportUnit: no custom unit with id "${id}"`);
+    return null;
+  }
+  return JSON.stringify(entry);
+}
+
+// importUnit(json) — consumes exactly what exportUnit produces. Trusts the
+// embedded `cost` as-is rather than recomputing (this is a same-shape round-trip
+// of a definition someone already saved/priced, not a fresh creation) — still
+// runs it through the same shape validation as saveCustomUnit so a corrupted or
+// hand-edited blob can't silently poison the registry. Upserts by id: importing
+// a previously-exported unit again (e.g. after clearing localStorage) restores it
+// under its original id.
+function importUnit(json) {
+  let def;
+  try {
+    def = JSON.parse(json);
+  } catch (err) {
+    console.warn('[25] importUnit: invalid JSON:', err);
+    return null;
+  }
+
+  const problem = _validateUnitDef(def);
+  if (problem) {
+    console.warn(`[25] importUnit: invalid definition — ${problem}`);
+    return null;
+  }
+
+  // Guard against importing something that collides with a built-in id, same
+  // reasoning as saveCustomUnit.
+  let id = def.id;
+  if (!id || UNIT_TYPES.some(u => u.id === id)) {
+    id = _freshId(def.name);
+  }
+  const entry = { ...def, id };
+
+  const existingIdx = customUnits.findIndex(u => u.id === id);
+  if (existingIdx >= 0) customUnits[existingIdx] = entry;
+  else customUnits.push(entry);
+
+  _persist();
+  return entry;
+}
+
+// ══════════════════════════════════════════════════════════
+// [30] SIMULATION — fixed 20Hz tick, pure logic
+// EXPORTS: createWorld, stepWorld, WorldState
+// MAY USE:  [10] utils, [20] content tables
+// MUST NOT: touch THREE.*, DOM, Math.random, or any [40]+ section
+// 2026-09-23: WorldState gains `terrain` (params for [10]'s terrainHeight) and
+// `deployTicks`; units gain `altitude`. Projectiles still fly straight lines and
+// ignore terrain — a shot can pass through a hill. Known, accepted for now.
+// ══════════════════════════════════════════════════════════
+
+// [30] receives already-resolved arrays of plain unit specs from [50]'s
+// resolveUnitSimSpec — one entry per unit instance. Where these specs come
+// from is not this section's concern — that's the whole point of the
+// boundary. As of C16 (per D05) the spec shape includes weapon-fire fields
+// alongside the original { hp, speed, range, dmg, cooldown }: targetCategory,
+// weaponTargetType, accuracy, mismatchAccuracy, projectileSpeed,
+// splashRadius, splashFalloff — see the projectile section below.
+
+const SENSOR_STEP = 20;
+const SENSOR_MAX = 1000;
+
+// Bases (C08): spawned as ordinary units, not a special entity type — same
+// shape as a combat unit (hp/maxHp/speed/range/dmg/cooldown/targetId/
+// targetPriority/stance), just with speed/range/dmg forced to 0 for now.
+// That's a placeholder, not an architectural limit: DESIGN.md §5 still has
+// "whether it fights back" open, and giving the base offensive stats later
+// means changing three numbers on this entity, not inventing a new one.
+// Because it's shape-identical to a unit, stepWorld below needs ZERO
+// changes — targeting, movement, damage, and death resolution already
+// handle it correctly: range 0 means it never closes distance to attack;
+// speed 0 means it never moves; an attacker's own range/dmg (not the
+// base's) is what determines whether they can hit it. No special-casing
+// anywhere in the tick loop — this is what "ordinary entity" bought us.
+const BASE_HP = 500;  // placeholder — base stats are undesigned (DESIGN.md §5)
+const BASE_X = 130;   // ground plane is 300×300 ([70]); unit spawn line is x=±40
+
+// Terrain + flight (2026-09-23). Ground height comes from [10]'s pure
+// terrainHeight(world.terrain, x, z) — the same function [70] draws the
+// ground with. Ground units ride the surface; air units hold a fixed
+// clearance above it. Movement is horizontal (x/z) only; height is then set
+// from the ground, so a drone chasing a bot no longer dives toward y=0.
+// Range checks and projectiles stay fully 3D.
+const AIR_CRUISE_ALTITUDE = 9; // placeholder — must stay below the shortest weapon range (20)
+
+// Deploy window (2026-09-23): nobody acts for the first DEPLOY_TICKS ticks.
+// Units spawn in place but are "coming out of the ground" — [70] animates
+// that emergence over the same window, so nothing fires while still buried.
+// Symmetric for both sides, so it changes pacing, not balance.
+const DEPLOY_TICKS = 30; // 1.5s at 20Hz
+
+function groundAt(world, x, z) {
+  return terrainHeight(world.terrain, x, z);
+}
+
+function altitudeFor(targetCategory) {
+  return targetCategory === 'air' ? AIR_CRUISE_ALTITUDE : 0;
+}
+
+// targetPriority (C05): which enemy a unit picks when it needs a new target.
+// Each selector receives the unit and the list of alive, hostile candidates
+// found within the current sensor radius, and returns the chosen one.
+// DESIGN.md's target-priority axis is the strategy layer; this is the sim's
+// half of that contract — the commander side (choosing which priority to
+// submit) stays hardcoded default until [50]/[80] pick it up (next session).
+const TARGET_SELECTORS = {
+  nearest: (unit, candidates) => {
+    let best = null, bestDistSq = Infinity;
+    for (const c of candidates) {
+      const dSq = vDistSq(unit.pos, c.pos);
+      if (dSq < bestDistSq) { bestDistSq = dSq; best = c; }
+    }
+    return best;
+  },
+  lowestHp: (unit, candidates) => {
+    let best = null, bestHp = Infinity;
+    for (const c of candidates) {
+      if (c.hp < bestHp) { bestHp = c.hp; best = c; }
+    }
+    return best;
+  },
+  highestThreat: (unit, candidates) => {
+    // Threat proxy is raw damage stat until [20] CONTENT TABLES exists —
+    // fine for now, revisit once real weapon data introduces better signals.
+    let best = null, bestDmg = -Infinity;
+    for (const c of candidates) {
+      if (c.dmg > bestDmg) { bestDmg = c.dmg; best = c; }
+    }
+    return best;
+  },
+};
+
+// stance (C09): now branched on for real. Bases exist (C08) and are ordinary
+// hostile candidates like any unit, so all three stances are expressed as a
+// candidate FILTER applied before targetPriority's selector runs — the
+// selector logic itself (nearest/lowestHp/highestThreat) is untouched.
+//   MixedPush — no filter. Base is just another candidate, exactly like
+//               before C09. This is the only stance whose behavior changes
+//               from nothing to nothing; it's the "no opinion" baseline.
+//   AllUnits  — filters the enemy base OUT of candidates, as long as the
+//               enemy faction still has at least one living non-base unit.
+//               Once that's no longer true (army wiped), the base is let
+//               back in as a candidate. This is "finish the army, then
+//               mop up the base" — never leaves a unit standing idle in
+//               front of a base it refuses to shoot.
+//   RushBase  — filters candidates down to ONLY the enemy base, always.
+//               This is DESIGN.md's leaker strategy: a unit on this stance
+//               never engages enemy units at all, even in its own path.
+// Whether a faction's army is "wiped" can't be answered per-unit by
+// re-scanning world.units (O(n) per attacker = O(n^2) per tick, which
+// DESIGN.md's performance budget forbids) so stepWorld computes it once per
+// tick as hasNonBaseAlive and threads it down to here.
+function filterByStance(candidates, stance, enemyHasNonBaseAlive) {
+  switch (stance) {
+    case 'RushBase':
+      return candidates.filter(c => c.isBase);
+    case 'AllUnits':
+      return enemyHasNonBaseAlive ? candidates.filter(c => !c.isBase) : candidates;
+    case 'MixedPush':
+    default:
+      return candidates;
+  }
+}
+
+function findTargetByPriority(world, unit, hasNonBaseAlive) {
+  const selector = TARGET_SELECTORS[unit.targetPriority] || TARGET_SELECTORS.nearest;
+  const enemyFaction = unit.faction === 'A' ? 'B' : 'A';
+  const enemyHasNonBaseAlive = hasNonBaseAlive[enemyFaction];
+  let radius = SENSOR_STEP;
+  while (radius <= SENSOR_MAX) {
+    const raw = world.spatialHash.queryNearby(unit.pos, radius);
+    let candidates = [];
+    for (const id of raw) {
+      const other = world.unitsById.get(id);
+      if (other && other.alive && other.faction !== unit.faction) candidates.push(other);
+    }
+    candidates = filterByStance(candidates, unit.stance, enemyHasNonBaseAlive);
+    if (candidates.length > 0) return selector(unit, candidates);
+    radius *= 2;
+  }
+  return null;
+}
+
+const VALID_STANCES = ['MixedPush', 'AllUnits', 'RushBase'];
+const VALID_TARGET_PRIORITIES = Object.keys(TARGET_SELECTORS);
+
+// Default orders match the fixed default [50] currently returns from every
+// commander's chooseOrders (both Human and AI, until next session). Kept
+// here as a fallback so any caller that doesn't pass orders yet — like the
+// existing determinism check — sees identical behavior to before C05.
+const DEFAULT_ORDERS = { stance: 'MixedPush', targetPriority: 'nearest' };
+
+function resolveOrders(orders) {
+  const stance = VALID_STANCES.includes(orders?.stance) ? orders.stance : DEFAULT_ORDERS.stance;
+  const targetPriority = VALID_TARGET_PRIORITIES.includes(orders?.targetPriority)
+    ? orders.targetPriority
+    : DEFAULT_ORDERS.targetPriority;
+  return { stance, targetPriority };
+}
+
+function createWorld(seed, loadoutA, loadoutB, ordersA = DEFAULT_ORDERS, ordersB = DEFAULT_ORDERS) {
+  const rng = makeRNG(seed);
+  const units = [];
+  const spacing = 4;
+
+  // Plain data, stored on WorldState so [70] can build the same ground.
+  // Terrain seed is derived from the match seed, so a replay reproduces it.
+  const terrain = {
+    seed: (seed ^ 0x51ed27) | 0,
+    amplitude: TERRAIN.amplitude,
+    scale: TERRAIN.scale,
+    octaves: TERRAIN.octaves,
+    flatZones: [
+      { x: -BASE_X, z: 0, radius: TERRAIN.baseFlatRadius, blend: TERRAIN.baseFlatBlend },
+      { x:  BASE_X, z: 0, radius: TERRAIN.baseFlatRadius, blend: TERRAIN.baseFlatBlend },
+    ],
+  };
+  const surfaceY = (x, z, cat) => terrainHeight(terrain, x, z) + altitudeFor(cat);
+
+  const resolvedOrders = {
+    A: resolveOrders(ordersA),
+    B: resolveOrders(ordersB),
+  };
+
+  const place = (loadout, faction, xSide) => {
+    const count = loadout.length;
+    const orders = resolvedOrders[faction];
+    loadout.forEach((spec, i) => {
+      const z = (i - (count - 1) / 2) * spacing;
+      const x = xSide * 40;
+      units.push({
+        id: `${faction}${i + 1}`,
+        faction,
+        pos: { x, y: surfaceY(x, z, spec.targetCategory), z },
+        altitude: altitudeFor(spec.targetCategory),
+        hp: spec.hp,
+        maxHp: spec.hp,
+        speed: spec.speed,
+        range: spec.range,
+        dmg: spec.dmg,
+        cooldown: 0,
+        cooldownMax: spec.cooldown,
+        alive: true,
+        targetId: null,
+        stance: orders.stance,               // consumed by findTargetByPriority — see note above
+        targetPriority: orders.targetPriority,
+        // D05/C16: carried straight through from [50]'s resolved spec — see
+        // spawnProjectile/resolveProjectileArrival below for how each is used.
+        targetCategory: spec.targetCategory,
+        weaponTargetType: spec.weaponTargetType,
+        accuracy: spec.accuracy,
+        mismatchAccuracy: spec.mismatchAccuracy,
+        projectileSpeed: spec.projectileSpeed,
+        splashRadius: spec.splashRadius,
+        splashFalloff: spec.splashFalloff,
+      });
+    });
+  };
+
+  place(loadoutA, 'A', -1);
+  place(loadoutB, 'B', 1);
+
+  // Bases (C08) — pushed in after regular units, same array, same shape.
+  // isBase is a plain read-only marker (not a behavior switch in [30] — see
+  // note above) so [40]/[70]/etc. can find "the base" without guessing by
+  // id string. Uses each side's own resolved orders like any other unit,
+  // even though stance/targetPriority don't do anything for a speed-0,
+  // range-0 entity yet — kept consistent rather than special-cased.
+  const makeBase = (faction, xSide) => {
+    const orders = resolvedOrders[faction];
+    return {
+      id: `base${faction}`,
+      faction,
+      pos: { x: xSide * BASE_X, y: surfaceY(xSide * BASE_X, 0, 'ground'), z: 0 },
+      altitude: 0,
+      hp: BASE_HP,
+      maxHp: BASE_HP,
+      speed: 0,
+      range: 0,
+      dmg: 0,
+      cooldown: 0,
+      cooldownMax: 0,
+      alive: true,
+      targetId: null,
+      stance: orders.stance,
+      targetPriority: orders.targetPriority,
+      isBase: true,
+      // D05/C16: a base is a static ground structure, not a chassis — 'ground'
+      // is a direct, no-special-casing choice consistent with this section's
+      // existing "ordinary entity" treatment of bases (see the block comment
+      // above BASE_HP). Everything else here is inert: dmg stays 0, so the
+      // firing guard in stepWorld below means a base never actually spawns a
+      // projectile — these values just need to exist so nothing reads undefined.
+      targetCategory: 'ground',
+      weaponTargetType: 'ground',
+      accuracy: 0,
+      mismatchAccuracy: 0,
+      projectileSpeed: 0,
+      splashRadius: 0,
+      splashFalloff: 0,
+    };
+  };
+
+  units.push(makeBase('A', -1));
+  units.push(makeBase('B', 1));
+
+  const unitsById = new Map(units.map(u => [u.id, u]));
+
+  return {
+    seed,
+    rng,               // threaded explicitly — as of D05/C16, also drives projectile hit/miss rolls
+    dt: 1 / 20,
+    tick: 0,
+    time: 0,
+    units,
+    unitsById,
+    orders: resolvedOrders,
+    spatialHash: new SpatialHash(20),
+    terrain,                // 2026-09-23 — read by [70] via [10]'s terrainHeight
+    deployTicks: DEPLOY_TICKS,
+    projectiles: [],        // D05/C16 — in-flight projectile entities, see below
+    nextProjectileId: 1,
+  };
+}
+
+// ---- D05/C16: projectiles ----
+//
+// A projectile is fire-and-forget (DESIGN.md D05): aimed at the target's
+// position at the instant of firing, then flies a straight line at a fixed
+// speed with no re-tracking. `totalDist` is fixed at spawn (distance to the
+// target at that instant); `traveled` accumulates each tick. Arrival is
+// resolved once `traveled` reaches `totalDist` — at that point the
+// projectile is removed from world.projectiles regardless of hit or miss.
+//
+// spawnProjectile — called from stepWorld's per-unit loop when a unit fires.
+// Reads only fields already sitting on the firing unit (all sourced from
+// [50]'s resolved spec, ultimately [20]'s WEAPONS) — never looks anything up
+// in [20] directly, keeping [30]'s "receives already-resolved specs" contract
+// intact.
+function spawnProjectile(world, unit, target) {
+  const dir = vNormalize(vSub(target.pos, unit.pos));
+  const totalDist = vDist(unit.pos, target.pos);
+  world.projectiles.push({
+    id: `p${world.nextProjectileId++}`,
+    faction: unit.faction,
+    pos: { ...unit.pos },
+    dir,
+    speed: unit.projectileSpeed,
+    totalDist,
+    traveled: 0,
+    dmg: unit.dmg,
+    weaponTargetType: unit.weaponTargetType,
+    accuracy: unit.accuracy,
+    mismatchAccuracy: unit.mismatchAccuracy,
+    splashRadius: unit.splashRadius,
+    splashFalloff: unit.splashFalloff,
+  });
+}
+
+// A target (unit or base) is "eligible" for a given weaponTargetType if the
+// weapon can hit its category at all — 'both' covers everyone, otherwise the
+// category must match exactly. Used both for the primary accuracy check (is
+// this a matched or mismatched shot) and for splash eligibility.
+function chassisEligible(weaponTargetType, targetCategory) {
+  return weaponTargetType === 'both' || targetCategory === weaponTargetType;
+}
+
+// resolveProjectileArrival — called once per projectile, the tick it reaches
+// its arrival point (see advanceProjectiles). Per D05: find whatever's
+// nearest the arrival point among the firing faction's living enemies: that
+// determines the accuracy roll (matched vs. mismatched chassis), rolled via
+// [10]'s seeded RNG (world.rng — never Math.random, per [10]'s contract). A
+// miss applies no damage and splash never triggers. A hit applies full dmg to
+// the nearest unit, then dmg * splashFalloff to any other eligible enemy
+// within splashRadius of the same arrival point, if the weapon has splash.
+function resolveProjectileArrival(world, p) {
+  const enemyFaction = p.faction === 'A' ? 'B' : 'A';
+
+  let nearest = null, nearestDistSq = Infinity;
+  for (const u of world.units) {
+    if (!u.alive || u.faction !== enemyFaction) continue;
+    const dSq = vDistSq(u.pos, p.pos);
+    if (dSq < nearestDistSq) { nearestDistSq = dSq; nearest = u; }
+  }
+  if (!nearest) return; // nothing left alive to hit — projectile just despawns
+
+  const matched = chassisEligible(p.weaponTargetType, nearest.targetCategory);
+  const hitChance = matched ? p.accuracy : p.mismatchAccuracy;
+  if (world.rng.next() >= hitChance) return; // miss — no damage, no splash
+
+  nearest.hp -= p.dmg;
+
+  if (p.splashRadius > 0 && p.splashFalloff > 0) {
+    const r2 = p.splashRadius * p.splashRadius;
+    for (const u of world.units) {
+      if (u === nearest || !u.alive || u.faction !== enemyFaction) continue;
+      if (!chassisEligible(p.weaponTargetType, u.targetCategory)) continue;
+      if (vDistSq(u.pos, p.pos) <= r2) u.hp -= p.dmg * p.splashFalloff;
+    }
+  }
+}
+
+// advanceProjectiles — moves every in-flight projectile by dt, resolving any
+// that reach their arrival point this tick. Clamps the final step to land
+// exactly on the arrival point (rather than overshooting past it) so
+// resolution always happens at the intended position, not wherever a large
+// dt happened to leave it.
+function advanceProjectiles(world, dt) {
+  const stillFlying = [];
+  for (const p of world.projectiles) {
+    const step = p.speed * dt;
+    const traveledBefore = p.traveled;
+    p.traveled += step;
+    if (p.traveled >= p.totalDist) {
+      const remaining = Math.max(0, p.totalDist - traveledBefore);
+      p.pos = vAdd(p.pos, vScale(p.dir, remaining));
+      resolveProjectileArrival(world, p);
+      // not pushed to stillFlying — despawns on arrival, hit or miss (D05)
+    } else {
+      p.pos = vAdd(p.pos, vScale(p.dir, step));
+      stillFlying.push(p);
+    }
+  }
+  world.projectiles = stillFlying;
+}
+
+function stepWorld(world) {
+  const dt = world.dt;
+
+  // Rebuild spatial hash from current positions each tick — alive units only.
+  world.spatialHash.clear();
+  for (const unit of world.units) {
+    if (unit.alive) world.spatialHash.insert(unit.id, unit.pos);
+  }
+
+  // AllUnits stance needs to know, per faction, whether any non-base enemy
+  // unit is still alive. Computed once here (O(n)) rather than per-attacker
+  // inside findTargetByPriority (would be O(n^2)) — see filterByStance note.
+  const hasNonBaseAlive = { A: false, B: false };
+  for (const unit of world.units) {
+    if (unit.alive && !unit.isBase) hasNonBaseAlive[unit.faction] = true;
+  }
+
+  // Deploy window: units are still emerging; nobody moves, targets, or fires.
+  const deploying = world.tick < world.deployTicks;
+
+  for (const unit of world.units) {
+    if (!unit.alive || deploying) continue;
+
+    if (unit.cooldown > 0) unit.cooldown = Math.max(0, unit.cooldown - dt);
+
+    let target = unit.targetId ? world.unitsById.get(unit.targetId) : null;
+    if (!target || !target.alive) {
+      target = findTargetByPriority(world, unit, hasNonBaseAlive);
+      unit.targetId = target ? target.id : null;
+    }
+
+    if (!target) continue; // no living enemies — idle
+
+    const dist = vDist(unit.pos, target.pos);
+    if (dist > unit.range) {
+      // Horizontal step toward the target, then snap height to the terrain
+      // (+ cruise altitude for air units). See AIR_CRUISE_ALTITUDE note.
+      const flat = { x: target.pos.x - unit.pos.x, y: 0, z: target.pos.z - unit.pos.z };
+      if (vLenSq(flat) > 1e-12) {
+        const dir = vNormalize(flat);
+        const nx = unit.pos.x + dir.x * unit.speed * dt;
+        const nz = unit.pos.z + dir.z * unit.speed * dt;
+        unit.pos = { x: nx, y: groundAt(world, nx, nz) + unit.altitude, z: nz };
+      }
+    } else if (unit.cooldown <= 0 && unit.dmg > 0) {
+      // D05/C16: firing spawns a projectile instead of applying damage
+      // instantly. The `dmg > 0` guard keeps a base (dmg forced to 0, see
+      // makeBase) from ever spawning a projectile at all — matches its
+      // pre-C16 no-op behavior instead of pushing a wasted 0-dmg entity into
+      // world.projectiles every tick it happens to be in range of something.
+      spawnProjectile(world, unit, target);
+      unit.cooldown = unit.cooldownMax;
+    }
+  }
+
+  // D05/C16: advance every in-flight projectile by this tick's dt, resolving
+  // (hit/miss + optional splash) any that reach their arrival point. This can
+  // apply damage, so death resolution below must run after it, not before.
+  advanceProjectiles(world, dt);
+
+  // Resolve deaths after this tick's actions (now: projectile arrivals are
+  // the only damage source), in fixed array order — keeps the outcome
+  // independent of anything but seed + loadouts.
+  for (const unit of world.units) {
+    if (unit.alive && unit.hp <= 0) unit.alive = false;
+  }
+
+  world.tick += 1;
+  world.time += dt;
+
+  return world;
+}
+
+
+// ══════════════════════════════════════════════════════════
+// [40] WIN CONDITIONS — pure checks against WorldState
+// EXPORTS: baseDestruction
+// MAY USE:  [10] utils, [20] content tables, read-only WorldState
+// MUST NOT: mutate world state; MUST NOT be called from inside [30]
+// ══════════════════════════════════════════════════════════
+
+// A win condition is (world) -> null | winnerId. DESIGN.md locks base
+// destruction as the only condition for v1 — CTF/annihilation/survival are
+// PARKED. Whoever calls this (currently a [90] stand-in; eventually [60]
+// MATCH FLOW) does so after each tick, never from inside stepWorld — that's
+// what keeps conditions swappable per ARCHITECTURE.md.
+//
+// Reads world.units directly rather than a dedicated getter: bases are
+// ordinary entities (see [30]'s note), found here via the isBase marker
+// rather than a hardcoded id string, same as any other read-only consumer
+// would look them up.
+
+function baseDestruction(world) {
+  const baseA = world.units.find(u => u.isBase && u.faction === 'A');
+  const baseB = world.units.find(u => u.isBase && u.faction === 'B');
+
+  const aDown = !baseA || !baseA.alive;
+  const bDown = !baseB || !baseB.alive;
+
+  if (aDown && bDown) {
+    // Both bases hit 0 HP on the same tick. The return type is
+    // null | winnerId — no draw — so this needs a deterministic pick, not
+    // a derived one. Arbitrary fixed rule, documented rather than hidden:
+    // B wins ties. (Separate from, and not compensating for, the known
+    // A-acts-first combat asymmetry noted in STATE.md's "Known bugs" —
+    // that's a balance question for later, this is just a tie-break.)
+    return 'B';
+  }
+  if (aDown) return 'B';
+  if (bDown) return 'A';
+  return null;
+}
+
+
+// ══════════════════════════════════════════════════════════
+// [50] COMMANDERS — human / AI / (future) remote. Produce loadouts and orders.
+// EXPORTS: HumanCommander, AICommander, resolveUnitSimSpec, buyableCatalog
+// MAY USE:  [10] utils, [20] content tables, [25] custom unit registry (to
+//           resolve unit references, including custom units, when building
+//           a loadout)
+// MUST NOT: read the opponent's pending loadout, ever. Reference [30]-[40]
+//           (a commander plans blind — it doesn't see or touch sim state).
+// ══════════════════════════════════════════════════════════
+
+// C12: PLACEHOLDER_UNIT_SPECS is gone. [20] (C10) and [25] (C11) both exist
+// and [25] was console-smoke-tested clean this session — this is that
+// wiring session. Every unit type, built-in or custom, is fetched through
+// [25]'s getUnitType/listCustomUnits rather than any local table, per
+// ARCHITECTURE.md's [25] contract and D02's "no human/AI asymmetry" decision.
+
+// buyableCatalog() — built-ins ([20]'s UNIT_TYPES) plus anything in [25]'s
+// custom registry. Read fresh on every call rather than cached at module
+// load, so a unit saved mid-session (or restored by [90]'s loadFromStorage()
+// at startup) is immediately buyable by both commanders and [80]'s buy UI —
+// there is exactly one place ([25]) that owns "what unit types currently
+// exist," and this just concatenates its two sources.
+//
+// 2026-09-23: optional `faction` narrows the catalog to that side's chassis
+// ([20]'s FACTION_CHASSIS) — bots for A, drones for B, custom units included
+// by their chassis. Called with no argument it still returns everything.
+function buyableCatalog(faction) {
+  const all = [...UNIT_TYPES, ...listCustomUnits()];
+  const chassis = faction ? FACTION_CHASSIS[faction] : null;
+  return chassis ? all.filter(u => u.chassis === chassis) : all;
+}
+
+// resolveUnitSimSpec(unitType) — translates a [20]/[25]-shaped unit type
+// entry (chassis, hp, speed, weaponId, armor, cost — built-in and custom are
+// shape-identical, so this works on either) into the plain per-instance spec
+// [30] actually consumes. This is the one place that does that translation,
+// by looking the unit's weapon up in [20]'s WEAPONS table. `cost` has no sim
+// meaning and isn't threaded through; `armor` isn't either — [30] doesn't
+// consume it yet (D04, still inert, same as `stance` was pre-C09). [30]'s
+// own contract note says it doesn't care where a resolved spec comes from —
+// this is where it comes from now, instead of a hardcoded literal.
+//
+// D05/C16: the spec grows two kinds of new field, both mechanical
+// pass-through — no new decisions made here, everything is sourced straight
+// from [20]. (1) `targetCategory` — unlike before, `chassis` now has sim
+// meaning (D05 uses it to resolve a projectile's accuracy roll), but [30]
+// shouldn't need to know "chassis" is [20]/[25] vocabulary or that 'drone'
+// means flying — that mapping belongs here, next to the data it reads, so
+// [30] just receives a plain 'ground'|'air' value like any other resolved
+// stat. (2) this unit's own weapon's D05 fields (`weaponTargetType`,
+// `accuracy`, `mismatchAccuracy`, `projectileSpeed`, `splashRadius`,
+// `splashFalloff`) — needed so [30] can spawn and resolve a projectile
+// without looking WEAPONS up itself. Splash fields default to 0 since only
+// some weapons define them.
+function resolveUnitSimSpec(unitType) {
+  const weapon = WEAPONS[unitType.weaponId];
+  return {
+    hp: unitType.hp,
+    speed: unitType.speed,
+    range: weapon.range,
+    dmg: weapon.dmg,
+    cooldown: 1 / weapon.rateOfFire,
+    targetCategory: unitType.chassis === 'drone' ? 'air' : 'ground',
+    weaponTargetType: weapon.targetType,
+    accuracy: weapon.accuracy,
+    mismatchAccuracy: weapon.mismatchAccuracy,
+    projectileSpeed: weapon.projectileSpeed,
+    splashRadius: weapon.splashRadius || 0,
+    splashFalloff: weapon.splashFalloff || 0,
+  };
+}
+
+// [30]'s valid targetPriority set (nearest/lowestHp/highestThreat), duplicated
+// here rather than imported — [50] MUST NOT reference [30]. If this ever
+// drifts from [30]'s TARGET_SELECTORS keys, [30]'s own validation
+// (VALID_TARGET_PRIORITIES) still falls back to its default, so a stale list
+// here degrades gracefully rather than breaking anything.
+const ORDER_TARGET_PRIORITIES = ['nearest', 'lowestHp', 'highestThreat'];
+
+// [30]'s valid stance set (MixedPush/AllUnits/RushBase, filterByStance since
+// C09), duplicated here for the same reason ORDER_TARGET_PRIORITIES is: [50]
+// MUST NOT reference [30], and [30]'s own orders validation falls back to a
+// default (MixedPush) if this ever drifts, so a stale list here degrades
+// gracefully. As of C13 all three are reachable live through [80]'s human
+// stance dropdown; as of C14 the AI picks from the same set.
+const ORDER_STANCES = ['MixedPush', 'AllUnits', 'RushBase'];
+
+// Easy-tier AI loadout: keep buying random affordable units until nothing
+// left in the catalog fits the remaining budget. Takes an rng (from [10]) so
+// the choice is reproducible per commander instance — never Math.random.
+function randomValidLoadout(rng, budget, faction) {
+  const units = [];
+  let remaining = budget;
+  const catalog = buyableCatalog(faction);
+  if (catalog.length === 0) return units; // no buyable unit types at all
+  const cheapest = Math.min(...catalog.map(s => s.cost));
+  while (remaining >= cheapest) {
+    const affordable = catalog.filter(s => s.cost <= remaining);
+    const pick = affordable[rng.int(affordable.length)];
+    units.push(resolveUnitSimSpec(pick));
+    remaining -= pick.cost;
+  }
+  return units;
+}
+
+// Both commander classes implement the same two-method contract and return
+// plain JSON-stringifiable plans. Match flow (not built until [60]) will
+// await both commanders' chooseLoadout calls before revealing either result
+// to anyone — that's what keeps this blind. Neither class here ever receives
+// or looks at the other side's plan; the only input each gets is its own
+// budget/faction/intel, or its own units/visibleEnemy for orders.
+
+class HumanCommander {
+  // [80] buy-phase UI now exists (C04). chooseLoadout no longer fires
+  // instantly — it resolves only when the player submits the buy-phase form.
+  constructor(seed) {
+    this.rng = makeRNG(seed);
+    this._pendingLoadoutResolve = null;
+    this._pendingOrdersResolve = null;
+  }
+
+  // The Promise executor runs synchronously, so by the time this call
+  // returns, _pendingLoadoutResolve is already set and ready for [80] to
+  // fill in later via submitLoadout(), whenever the player finishes buying.
+  async chooseLoadout(budget, faction, intel) {
+    return new Promise((resolve) => {
+      this._pendingLoadoutResolve = resolve;
+    });
+  }
+
+  // Called by [80]'s buy-phase UI when the player submits, per ARCHITECTURE's
+  // "[80] MAY USE [50] to submit human choices". Not part of the commander
+  // interface itself — [60] MATCH FLOW will never call this, only [80] does,
+  // and only for the human side.
+  submitLoadout(plan) {
+    if (!this._pendingLoadoutResolve) return;
+    const resolve = this._pendingLoadoutResolve;
+    this._pendingLoadoutResolve = null;
+    resolve(plan);
+  }
+
+  // C07: resolves only via submitOrders() now, called for real by [80]'s
+  // stance/priority panel (initOrdersUI) when the player confirms. The
+  // C06 TEMP_C06_STUB_ORDERS stand-in is gone — this is the same pattern
+  // chooseLoadout/submitLoadout already established for the buy phase.
+  async chooseOrders(myUnits, visibleEnemy) {
+    return new Promise((resolve) => {
+      this._pendingOrdersResolve = resolve;
+    });
+  }
+
+  // Called by [80]'s (future) stance/priority panel when the player submits,
+  // same shape and same justification as submitLoadout above.
+  submitOrders(plan) {
+    if (!this._pendingOrdersResolve) return;
+    const resolve = this._pendingOrdersResolve;
+    this._pendingOrdersResolve = null;
+    resolve(plan);
+  }
+}
+
+class AICommander {
+  // Easy tier only for now. Medium/Hard/Brutal (DESIGN.md AI ladder) are
+  // later work for [50]+[85] and don't belong in this session's scope.
+  constructor(seed) {
+    this.rng = makeRNG(seed);
+  }
+
+  async chooseLoadout(budget, faction, intel) {
+    const units = randomValidLoadout(this.rng, budget, faction);
+    return { units, upgrades: [] };
+  }
+
+  // C06: picks a real (simple/random) targetPriority instead of the fixed
+  // default. C14: stance is now picked the same way instead of hardcoded
+  // MixedPush — [30] has consumed stance for real since C09, and as of C13
+  // the human side can submit any of the three through [80]'s dropdown, so
+  // an AI that always sends MixedPush was a real, observable asymmetry
+  // (flagged in STATE.md as the leading C14 candidate). Both picks draw from
+  // this commander's own seeded rng — never Math.random — same reproducibility
+  // guarantee every other AI decision already has.
+  async chooseOrders(myUnits, visibleEnemy) {
+    const targetPriority =
+      ORDER_TARGET_PRIORITIES[this.rng.int(ORDER_TARGET_PRIORITIES.length)];
+    const stance = ORDER_STANCES[this.rng.int(ORDER_STANCES.length)];
+    return { stance, targetPriority };
+  }
+}
+
+
+// ══════════════════════════════════════════════════════════
+// [70] RENDERER — three.js scene, InstancedMesh pools, camera, interpolation
+// EXPORTS: initRenderer, renderFrame, resetCommanderView
+// MAY USE:  [10] utils (incl. terrainHeight), [20] content tables, read-only WorldState
+// MUST NOT: mutate world state, or advance the sim
+// ══════════════════════════════════════════════════════════
+
+// 2026-09-23 rewrite. What this section now draws, all read-only from WorldState:
+//  - Terrain: a height-displaced mesh built from world.terrain via [10]'s
+//    terrainHeight — the same function [30] places units with — plus contour
+//    lines (marching squares) for a topographic-map read of the hills.
+//  - Units: one InstancedMesh per (faction, category) — boxes for ground,
+//    flattened diamonds for air — still "one mesh per type", never per unit.
+//    Ground units turn to face their direction of travel.
+//  - Bases: their own pool, a hex tower whose height tracks remaining HP.
+//  - Projectiles: world.projectiles as tracer streaks, interpolated between
+//    snapshots exactly like units. No impact effects — that's still gated on
+//    the undesigned hit/impact event signaling topic (DESIGN.md §5).
+//  - Emergence: during world.deployTicks, units rise out of the ground,
+//    staggered per unit. Purely cosmetic; [30] holds everyone still meanwhile.
+//  - Camera: starts in "commander view" (low, behind your base, looking at
+//    the enemy). OrbitControls stay live; resetCommanderView() snaps back.
+//    Floor clamp (D03) is now terrain-aware.
+
+const MAX_UNITS_PER_POOL = 200;       // DESIGN.md performance budget, per side
+const MAX_PROJECTILES_PER_FACTION = 1500;
+const ARENA_SIZE = 360;
+const TERRAIN_SEGMENTS = 144;
+const CONTOUR_STEP = 1.5;
+const CAMERA_FLOOR_CLEARANCE = 1.5;
+
+const FACTION_COLORS = { A: 0x4da6ff, B: 0xff5c5c };
+const TRACER_COLORS  = { A: 0xbfe3ff, B: 0xffc2b3 };
+const BASE_COLORS    = { A: 0x2f6fb0, B: 0xb03a3a };
+const SKY_COLOR = 0x1b2230;
+
+let scene, camera, threeRenderer, controls, terrainParams = null;
+const unitPools = {};        // key `${faction}:${category}` -> InstancedMesh
+const basePools = {};        // faction -> InstancedMesh
+const projectilePools = {};  // faction -> InstancedMesh
+const headingById = new Map();
+const dummy = new THREE.Object3D();
+const Z_AXIS = new THREE.Vector3(0, 0, 1);
+const tmpDir = new THREE.Vector3();
+
+function groundY(x, z) {
+  return terrainHeight(terrainParams, x, z);
+}
+
+function buildTerrainMesh() {
+  const geo = new THREE.PlaneGeometry(ARENA_SIZE, ARENA_SIZE, TERRAIN_SEGMENTS, TERRAIN_SEGMENTS);
+  geo.rotateX(-Math.PI / 2); // plane now lies in x/z, y up — matches the sim
+  const pos = geo.attributes.position;
+  const colors = new Float32Array(pos.count * 3);
+  const low = new THREE.Color(0x26332b), high = new THREE.Color(0x7d8660), c = new THREE.Color();
+  const amp = terrainParams.amplitude || 1;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), z = pos.getZ(i);
+    const h = groundY(x, z);
+    pos.setY(i, h);
+    c.copy(low).lerp(high, Math.min(1, Math.max(0, (h / amp + 1) / 2)));
+    colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geo.computeVertexNormals();
+  const mat = new THREE.MeshStandardMaterial({
+    vertexColors: true, roughness: 0.95, metalness: 0,
+    polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1, // keeps contour lines on top
+  });
+  return new THREE.Mesh(geo, mat);
+}
+
+// Marching squares over the same height field, one segment set per level.
+function buildContourLines() {
+  const n = TERRAIN_SEGMENTS, cell = ARENA_SIZE / n, half = ARENA_SIZE / 2;
+  const hts = new Float32Array((n + 1) * (n + 1));
+  for (let j = 0; j <= n; j++) for (let i = 0; i <= n; i++) {
+    hts[j * (n + 1) + i] = groundY(-half + i * cell, -half + j * cell);
+  }
+  const amp = terrainParams.amplitude || 0;
+  const verts = [];
+  const lift = 0.12;
+  for (let L = -amp + CONTOUR_STEP; L < amp; L += CONTOUR_STEP) {
+    if (Math.abs(L) < 1e-6) continue; // skip the zero level — it traces every flat pad
+    for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+      const x0 = -half + i * cell, z0 = -half + j * cell;
+      const h00 = hts[j * (n + 1) + i], h10 = hts[j * (n + 1) + i + 1];
+      const h01 = hts[(j + 1) * (n + 1) + i], h11 = hts[(j + 1) * (n + 1) + i + 1];
+      const pts = [];
+      const edge = (ha, hb, xa, za, xb, zb) => {
+        if ((ha < L) !== (hb < L)) {
+          const t = (L - ha) / (hb - ha);
+          pts.push(xa + (xb - xa) * t, L + lift, za + (zb - za) * t);
+        }
+      };
+      edge(h00, h10, x0, z0, x0 + cell, z0);
+      edge(h10, h11, x0 + cell, z0, x0 + cell, z0 + cell);
+      edge(h11, h01, x0 + cell, z0 + cell, x0, z0 + cell);
+      edge(h01, h00, x0, z0 + cell, x0, z0);
+      if (pts.length >= 6) verts.push(...pts.slice(0, 6));
+      if (pts.length === 12) verts.push(...pts.slice(6, 12)); // saddle
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  const mat = new THREE.LineBasicMaterial({ color: 0xc9d1a8, transparent: true, opacity: 0.22 });
+  return new THREE.LineSegments(geo, mat);
+}
+
+function makePool(geometry, material, capacity) {
+  const mesh = new THREE.InstancedMesh(geometry, material, capacity);
+  mesh.count = 0;
+  mesh.frustumCulled = false; // instances span the whole arena
+  return mesh;
+}
+
+function makeGroundUnitGeometry() { return new THREE.BoxGeometry(1.6, 1.2, 2.2); }
+function makeAirUnitGeometry() {
+  const g = new THREE.OctahedronGeometry(1.3);
+  g.scale(1, 0.4, 1);
+  return g;
+}
+
+function initRenderer(container, world) {
+  terrainParams = world.terrain || null;
+
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(SKY_COLOR);
+  scene.fog = new THREE.Fog(SKY_COLOR, 220, 560);
+
+  camera = new THREE.PerspectiveCamera(55, container.clientWidth / container.clientHeight, 0.1, 2000);
+
+  threeRenderer = new THREE.WebGLRenderer({ antialias: true });
+  threeRenderer.setSize(container.clientWidth, container.clientHeight);
+  threeRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  container.appendChild(threeRenderer.domElement);
+
+  controls = new OrbitControls(camera, threeRenderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.maxDistance = 600;
+
+  scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x2a2a22, 0.9));
+  const sun = new THREE.DirectionalLight(0xfff1dc, 1.4);
+  sun.position.set(-60, 70, 120); // low-ish and off to the side, so hills cast readable shading
+  scene.add(sun);
+
+  scene.add(buildTerrainMesh());
+  scene.add(buildContourLines());
+
+  for (const faction of Object.keys(FACTION_COLORS)) {
+    const unitMat = new THREE.MeshStandardMaterial({ color: FACTION_COLORS[faction], roughness: 0.6 });
+    for (const [category, geo] of [['ground', makeGroundUnitGeometry()], ['air', makeAirUnitGeometry()]]) {
+      const mesh = makePool(geo, unitMat, MAX_UNITS_PER_POOL);
+      unitPools[`${faction}:${category}`] = mesh;
+      scene.add(mesh);
+    }
+    const baseMesh = makePool(
+      new THREE.CylinderGeometry(6, 7, 8, 6),
+      new THREE.MeshStandardMaterial({ color: BASE_COLORS[faction], roughness: 0.8 }),
+      4
+    );
+    basePools[faction] = baseMesh;
+    scene.add(baseMesh);
+
+    const tracer = makePool(
+      new THREE.BoxGeometry(0.22, 0.22, 1.8),
+      new THREE.MeshBasicMaterial({ color: TRACER_COLORS[faction] }),
+      MAX_PROJECTILES_PER_FACTION
+    );
+    projectilePools[faction] = tracer;
+    scene.add(tracer);
+  }
+
+  resetCommanderView();
+
+  window.addEventListener('resize', () => {
+    camera.aspect = container.clientWidth / container.clientHeight;
+    camera.updateProjectionMatrix();
+    threeRenderer.setSize(container.clientWidth, container.clientHeight);
+  });
+
+  return { scene, camera, renderer: threeRenderer, controls };
+}
+
+// Commander view: slightly above and behind side A's base (x = -130 in the
+// sim), looking down-field toward the enemy. Hardcoded to side A because the
+// human is always side A for now; if that ever changes, pass the side in.
+function resetCommanderView() {
+  if (!camera) return;
+  const camX = -168, camZ = 0;
+  camera.position.set(camX, groundY(camX, camZ) + 24, camZ);
+  controls.target.set(-20, groundY(-20, 0) + 2, 0);
+  controls.update();
+}
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+function clamp01(t) { return t < 0 ? 0 : t > 1 ? 1 : t; }
+function easeOutCubic(t) { const u = 1 - t; return 1 - u * u * u; }
+
+// Stable per-unit stagger in [0, 1) from the id string — cosmetic only.
+function idStagger(id) {
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i++) { h ^= id.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0) / 4294967296;
+}
+
+function interpPos(prev, curr, alpha) {
+  if (!prev) return curr;
+  return { x: lerp(prev.x, curr.x, alpha), y: lerp(prev.y, curr.y, alpha), z: lerp(prev.z, curr.z, alpha) };
+}
+
+// worldPrev may be a full WorldState or a lightweight snapshot — only
+// `.unitsById` ({pos, alive}) and `.projectilesById` ({pos}) are read.
+// worldCurr is read fully but never written.
+function renderFrame(worldPrev, worldCurr, alpha) {
+  if (!scene) return;
+
+  const prevUnits = worldPrev ? worldPrev.unitsById : null;
+  const prevProj = worldPrev ? worldPrev.projectilesById : null;
+
+  // Render time in seconds, for the emergence animation.
+  const dt = worldCurr.dt || 1 / 20;
+  const t = Math.max(0, (worldCurr.tick - 1 + alpha)) * dt;
+  const deploySecs = (worldCurr.deployTicks || 0) * dt;
+
+  const counts = {};
+  for (const k of Object.keys(unitPools)) counts[k] = 0;
+  const baseCounts = {};
+  for (const k of Object.keys(basePools)) baseCounts[k] = 0;
+
+  for (const unit of worldCurr.units) {
+    if (!unit.alive) continue;
+
+    const prevUnit = prevUnits ? prevUnits.get(unit.id) : null;
+    const pos = prevUnit && prevUnit.alive ? interpPos(prevUnit.pos, unit.pos, alpha) : unit.pos;
+
+    if (unit.isBase) {
+      const mesh = basePools[unit.faction];
+      if (!mesh) continue;
+      const idx = baseCounts[unit.faction];
+      const frac = Math.max(0, unit.hp) / (unit.maxHp || 1);
+      const sy = 0.2 + 0.8 * frac;
+      dummy.position.set(pos.x, pos.y + 4 * sy, pos.z);
+      dummy.rotation.set(0, 0, 0);
+      dummy.scale.set(1, sy, 1);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(idx, dummy.matrix);
+      baseCounts[unit.faction] = idx + 1;
+      continue;
+    }
+
+    const category = unit.targetCategory === 'air' ? 'air' : 'ground';
+    const key = `${unit.faction}:${category}`;
+    const mesh = unitPools[key];
+    if (!mesh) continue;
+    const idx = counts[key];
+    if (idx >= MAX_UNITS_PER_POOL) continue; // over budget — drop, don't crash
+
+    // Heading: face the direction of horizontal travel; keep the last one when still.
+    if (prevUnit && prevUnit.alive) {
+      const dx = unit.pos.x - prevUnit.pos.x, dz = unit.pos.z - prevUnit.pos.z;
+      if (dx * dx + dz * dz > 1e-6) headingById.set(unit.id, Math.atan2(dx, dz));
+    }
+    const heading = headingById.has(unit.id)
+      ? headingById.get(unit.id)
+      : (unit.faction === 'A' ? Math.PI / 2 : -Math.PI / 2); // face the enemy on spawn
+
+    let y = pos.y + (category === 'ground' ? 0.6 : 0);
+    if (deploySecs > 0 && t < deploySecs) {
+      const start = idStagger(unit.id) * deploySecs * 0.55;
+      const e = easeOutCubic(clamp01((t - start) / (deploySecs * 0.45)));
+      const g = groundY(pos.x, pos.z);
+      if (category === 'ground') y = lerp(g - 2.5, y, e);           // rolls up out of the ground
+      else y = lerp(g - 2, pos.y, e);                               // lifts off from below grade
+    }
+
+    dummy.position.set(pos.x, y, pos.z);
+    dummy.rotation.set(0, heading, 0);
+    dummy.scale.set(1, 1, 1);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(idx, dummy.matrix);
+    counts[key] = idx + 1;
+  }
+
+  for (const [k, mesh] of Object.entries(unitPools)) {
+    mesh.count = counts[k];
+    mesh.instanceMatrix.needsUpdate = true;
+  }
+  for (const [k, mesh] of Object.entries(basePools)) {
+    mesh.count = baseCounts[k];
+    mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  // Projectiles — tracer streaks along their flight direction.
+  const pCounts = {};
+  for (const k of Object.keys(projectilePools)) pCounts[k] = 0;
+  for (const p of worldCurr.projectiles || []) {
+    const mesh = projectilePools[p.faction];
+    if (!mesh) continue;
+    const idx = pCounts[p.faction];
+    if (idx >= MAX_PROJECTILES_PER_FACTION) continue;
+    const prevP = prevProj ? prevProj.get(p.id) : null;
+    const pos = interpPos(prevP ? prevP.pos : null, p.pos, alpha);
+    dummy.position.set(pos.x, pos.y + 0.6, pos.z);
+    tmpDir.set(p.dir.x, p.dir.y, p.dir.z);
+    if (tmpDir.lengthSq() > 1e-9) dummy.quaternion.setFromUnitVectors(Z_AXIS, tmpDir.normalize());
+    dummy.scale.set(1, 1, 1);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(idx, dummy.matrix);
+    pCounts[p.faction] = idx + 1;
+  }
+  for (const [k, mesh] of Object.entries(projectilePools)) {
+    mesh.count = pCounts[k];
+    mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  controls.update();
+  // D03 floor, now terrain-aware: applied after controls.update() every frame.
+  const floor = groundY(camera.position.x, camera.position.z) + CAMERA_FLOOR_CLEARANCE;
+  if (camera.position.y < floor) camera.position.y = floor;
+  threeRenderer.render(scene, camera);
+}
+
+
+// ══════════════════════════════════════════════════════════
+// [80] UI — buy phase, stance/priority pickers, HUD, round summary
+// EXPORTS: initBuyPhaseUI, initOrdersUI, initUnitCreationUI
+// MAY USE:  [10] utils, [20] content tables, [25] custom unit registry, [50] commanders
+//           (to submit human choices), read-only WorldState
+// MUST NOT: mutate unit stats or world state directly. All player influence enters the sim
+//           through a commander plan — no exceptions, or the multiplayer path dies quietly.
+// ══════════════════════════════════════════════════════════
+
+// Buy-phase portion (C04) plus the stance/target-priority panel (C07). HUD/round summary
+// are still not built.
+//
+// C15: new initUnitCreationUI panel. [25] was already granted to [80]'s MAY USE list back in
+// D02/ARCHITECTURE.md ("Unit-creation panel ... calls [25]'s saveCustomUnit/exportUnit/
+// importUnit — it does not write custom unit data anywhere else") — this session is the first
+// to actually use that grant; the in-file banner above was out of sync with ARCHITECTURE.md
+// until now and is corrected as part of this change. Per that contract, this panel calls
+// saveCustomUnit/exportUnit/importUnit directly and nothing else in [25]; it never touches
+// UNIT_TYPES or the sim. Export/import go through paste-and-copy textareas rather than Blob/
+// file-download APIs — this keeps the whole panel working reliably under the file:// origin
+// this project runs from (DESIGN.md already flags file:// as flaky for localStorage; this
+// sidesteps the same class of flakiness for downloads), and mirrors [25]'s own export/import
+// shape (a JSON string in, a JSON string out) with no extra plumbing.
+//
+// This panel is deliberately create-only, not edit-existing: there's no "load unit X back into
+// the form" affordance. saveCustomUnit already supports overwrite-by-id, so editing is a small
+// follow-up if wanted — out of scope here to keep this session to one clear feature. Similarly,
+// intel tier is not part of the creation form: [25]'s costFormula accepts an optional intelTier
+// purely for price-preview callers, but no built-in UNIT_TYPES entry bakes a tier into its cost
+// (tier is chosen again at loadout time, per ARCHITECTURE.md), so custom units are priced the
+// same way — stats + weapon only — to stay consistent with how built-ins are costed.
+//
+// C12: unitTypes is now a real catalog — [20]'s UNIT_TYPES plus [25]'s custom registry,
+// same shape (chassis/hp/speed/weaponId/armor/cost) either way — instead of [50]'s deleted
+// PLACEHOLDER_UNIT_SPECS. The caller (bootstrap, [90]) is expected to pass [50]'s
+// buyableCatalog() here so the buy UI and both commanders always agree on what's purchasable.
+// Per-row display dmg is read from [20]'s WEAPONS table via each entry's weaponId, since a
+// unit type itself doesn't carry dmg/range/cooldown directly (those live on the weapon).
+//
+// initBuyPhaseUI never touches WorldState or unit stats directly — it only ever builds a
+// plain {units, upgrades} plan and hands it to the commander via submitLoadout(), which is
+// the one channel [50] exposes for this. That's what keeps this wired the same way a future
+// networked human's client would be.
+
+function initBuyPhaseUI(container, commander, budget, unitTypes) {
+  container.innerHTML = '';
+  container.classList.add('buy-phase-active');
+
+  const counts = unitTypes.map(() => 0);
+
+  const heading = document.createElement('h2');
+  heading.textContent = 'Buy Phase';
+  container.appendChild(heading);
+
+  const budgetLine = document.createElement('div');
+  budgetLine.className = 'buy-phase-budget';
+  container.appendChild(budgetLine);
+
+  const list = document.createElement('div');
+  list.className = 'buy-phase-list';
+  container.appendChild(list);
+
+  const submitBtn = document.createElement('button');
+  submitBtn.textContent = 'Submit Loadout';
+  submitBtn.className = 'buy-phase-submit';
+  container.appendChild(submitBtn);
+
+  function spent() {
+    return unitTypes.reduce((sum, spec, i) => sum + spec.cost * counts[i], 0);
+  }
+
+  function render() {
+    const remaining = budget - spent();
+    budgetLine.textContent = `Budget: ${remaining} / ${budget} remaining`;
+
+    list.innerHTML = '';
+    unitTypes.forEach((spec, i) => {
+      const row = document.createElement('div');
+      row.className = 'buy-phase-row';
+
+      const dmg = WEAPONS[spec.weaponId]?.dmg ?? '?'; // dmg lives on the weapon, not the unit
+      const label = document.createElement('span');
+      label.className = 'buy-phase-label';
+      label.textContent =
+        `${spec.name}  (cost ${spec.cost} · hp ${spec.hp} · dmg ${dmg} · spd ${spec.speed})`;
+
+      const minusBtn = document.createElement('button');
+      minusBtn.textContent = '−';
+      minusBtn.disabled = counts[i] <= 0;
+      minusBtn.onclick = () => { counts[i] -= 1; render(); };
+
+      const countLabel = document.createElement('span');
+      countLabel.className = 'buy-phase-count';
+      countLabel.textContent = String(counts[i]);
+
+      const plusBtn = document.createElement('button');
+      plusBtn.textContent = '+';
+      plusBtn.disabled = remaining < spec.cost;
+      plusBtn.onclick = () => { counts[i] += 1; render(); };
+
+      row.append(label, minusBtn, countLabel, plusBtn);
+      list.appendChild(row);
+    });
+
+    submitBtn.disabled = spent() > budget;
+  }
+
+  submitBtn.onclick = () => {
+    const units = [];
+    unitTypes.forEach((spec, i) => {
+      for (let n = 0; n < counts[i]; n++) {
+        units.push(resolveUnitSimSpec(spec));
+      }
+    });
+    container.classList.remove('buy-phase-active');
+    container.innerHTML = '';
+    commander.submitLoadout({ units, upgrades: [] });
+  };
+
+  render();
+}
+
+// Unit-creation panel (C15). Optional step: create custom units (saved via [25]'s
+// saveCustomUnit), export/import them as JSON via [25]'s exportUnit/importUnit, then continue.
+// `onDone` is called once (via the Continue button) — the caller (bootstrap) is expected to
+// mount the buy phase there, the same way initBuyPhaseUI's submit hands off to the orders
+// panel. Nothing here is required — a player who creates nothing just clicks Continue and the
+// buy phase looks exactly as it did before this session, sourced from buyableCatalog() same as
+// always (C12: that catalog already reads listCustomUnits() fresh every call, so anything saved
+// here is picked up automatically with no further wiring).
+function initUnitCreationUI(container, onDone) {
+  container.innerHTML = '';
+  container.classList.add('unit-creation-active');
+
+  const heading = document.createElement('h2');
+  heading.textContent = 'Create Custom Units (optional)';
+  container.appendChild(heading);
+
+  const status = document.createElement('div');
+  status.className = 'unit-creation-status';
+  container.appendChild(status);
+
+  function setStatus(text, kind) {
+    status.textContent = text;
+    status.className = 'unit-creation-status' + (kind ? ` ${kind}` : '');
+  }
+
+  // ---- form ----
+  const form = document.createElement('div');
+
+  function formRow(labelText, inputEl) {
+    const row = document.createElement('div');
+    row.className = 'unit-creation-form-row';
+    const label = document.createElement('label');
+    label.textContent = labelText;
+    row.append(label, inputEl);
+    form.appendChild(row);
+    return inputEl;
+  }
+
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.placeholder = 'e.g. Heavy Scout';
+  formRow('Name', nameInput);
+
+  const chassisSelect = document.createElement('select');
+  ['bot', 'drone'].forEach((c) => {
+    const opt = document.createElement('option');
+    opt.value = c;
+    opt.textContent = c;
+    chassisSelect.appendChild(opt);
+  });
+  formRow('Chassis', chassisSelect);
+
+  const hpInput = document.createElement('input');
+  hpInput.type = 'number';
+  hpInput.min = '1';
+  hpInput.step = '1';
+  hpInput.value = '50';
+  formRow('HP', hpInput);
+
+  const speedInput = document.createElement('input');
+  speedInput.type = 'number';
+  speedInput.min = '0.1';
+  speedInput.step = '0.5';
+  speedInput.value = '5';
+  formRow('Speed', speedInput);
+
+  const armorInput = document.createElement('input');
+  armorInput.type = 'number';
+  armorInput.min = '0';
+  armorInput.step = '0.5';
+  armorInput.value = '0';
+  formRow('Armor', armorInput);
+
+  const weaponSelect = document.createElement('select');
+  Object.keys(WEAPONS).forEach((wid) => {
+    const w = WEAPONS[wid];
+    const opt = document.createElement('option');
+    opt.value = wid;
+    opt.textContent = `${wid} (dmg ${w.dmg}, range ${w.range}, ${w.targetType})`;
+    weaponSelect.appendChild(opt);
+  });
+  formRow('Weapon', weaponSelect);
+
+  container.appendChild(form);
+
+  const preview = document.createElement('div');
+  preview.className = 'unit-creation-preview';
+  container.appendChild(preview);
+
+  function currentStats() {
+    return {
+      hp: parseFloat(hpInput.value),
+      speed: parseFloat(speedInput.value),
+      armor: parseFloat(armorInput.value),
+    };
+  }
+
+  function updatePreview() {
+    const stats = currentStats();
+    if (Number.isNaN(stats.hp) || Number.isNaN(stats.speed) || Number.isNaN(stats.armor)) {
+      preview.textContent = 'Cost: —';
+      return;
+    }
+    // Preview-only call to [25]'s costFormula, no intelTier (see scope note above) — same
+    // pricing path saveCustomUnit itself uses, so this preview can never drift from the
+    // price actually charged on save.
+    preview.textContent = `Cost: ${costFormula(stats, weaponSelect.value).toFixed(1)}`;
+  }
+  [hpInput, speedInput, armorInput, weaponSelect].forEach((el) => {
+    el.addEventListener('input', updatePreview);
+    el.addEventListener('change', updatePreview);
+  });
+  updatePreview();
+
+  const saveBtn = document.createElement('button');
+  saveBtn.textContent = 'Save Unit';
+  saveBtn.className = 'unit-creation-save';
+  container.appendChild(saveBtn);
+
+  // ---- saved units list ----
+  const listHeading = document.createElement('div');
+  listHeading.textContent = 'Your custom units:';
+  container.appendChild(listHeading);
+
+  const list = document.createElement('div');
+  list.className = 'unit-creation-list';
+  container.appendChild(list);
+
+  // ---- export / import (paste-and-copy text, not file downloads — see scope note above) ----
+  const io = document.createElement('div');
+  io.className = 'unit-creation-io';
+
+  const exportWrap = document.createElement('div');
+  const exportLabel = document.createElement('div');
+  exportLabel.textContent = 'Exported unit (select and copy to back up):';
+  const exportArea = document.createElement('textarea');
+  exportArea.readOnly = true;
+  exportWrap.append(exportLabel, exportArea);
+  io.appendChild(exportWrap);
+
+  const importWrap = document.createElement('div');
+  const importLabel = document.createElement('div');
+  importLabel.textContent = 'Paste a previously-exported unit here to import it:';
+  const importArea = document.createElement('textarea');
+  const importBtn = document.createElement('button');
+  importBtn.textContent = 'Import';
+  importWrap.append(importLabel, importArea, importBtn);
+  io.appendChild(importWrap);
+
+  container.appendChild(io);
+
+  function renderList() {
+    list.innerHTML = '';
+    const units = listCustomUnits();
+    if (units.length === 0) {
+      const empty = document.createElement('div');
+      empty.textContent = '(none yet)';
+      list.appendChild(empty);
+      return;
+    }
+    units.forEach((u) => {
+      const row = document.createElement('div');
+      row.className = 'unit-creation-list-row';
+
+      const label = document.createElement('span');
+      label.className = 'unit-creation-list-label';
+      label.textContent =
+        `${u.name}  (${u.chassis} · cost ${u.cost.toFixed(1)} · hp ${u.hp} · spd ${u.speed} · armor ${u.armor})`;
+
+      const exportBtn = document.createElement('button');
+      exportBtn.textContent = 'Export';
+      exportBtn.onclick = () => {
+        const json = exportUnit(u.id);
+        if (json) {
+          exportArea.value = json;
+          exportArea.focus();
+          exportArea.select();
+          setStatus(`Exported "${u.name}" below.`, 'ok');
+        } else {
+          setStatus(`Could not export "${u.name}".`, 'error');
+        }
+      };
+
+      row.append(label, exportBtn);
+      list.appendChild(row);
+    });
+  }
+  renderList();
+
+  saveBtn.onclick = () => {
+    const def = {
+      name: nameInput.value.trim(),
+      chassis: chassisSelect.value,
+      hp: parseFloat(hpInput.value),
+      speed: parseFloat(speedInput.value),
+      armor: parseFloat(armorInput.value),
+      weaponId: weaponSelect.value,
+    };
+    const saved = saveCustomUnit(def);
+    if (saved) {
+      setStatus(`Saved "${saved.name}" — cost ${saved.cost.toFixed(1)}.`, 'ok');
+      nameInput.value = '';
+      renderList();
+    } else {
+      // saveCustomUnit already console.warns the specific reason (invalid shape) — the UI
+      // surfaces a generic pointer rather than duplicating its validation logic.
+      setStatus('Could not save — check the values above (see console for details).', 'error');
+    }
+  };
+
+  importBtn.onclick = () => {
+    const text = importArea.value.trim();
+    if (!text) {
+      setStatus('Paste a unit\'s exported JSON first.', 'error');
+      return;
+    }
+    const imported = importUnit(text);
+    if (imported) {
+      setStatus(`Imported "${imported.name}".`, 'ok');
+      importArea.value = '';
+      renderList();
+    } else {
+      setStatus('Import failed — that doesn\'t look like a valid exported unit (see console).', 'error');
+    }
+  };
+
+  const continueBtn = document.createElement('button');
+  continueBtn.textContent = 'Continue to Buy Phase';
+  continueBtn.className = 'unit-creation-continue';
+  continueBtn.onclick = () => {
+    container.classList.remove('unit-creation-active');
+    container.innerHTML = '';
+    onDone();
+  };
+  container.appendChild(continueBtn);
+}
+
+// Stance/target-priority panel (C07, finishes build order step 5; stance enabled for real C13).
+//
+// Stance is duplicated here rather than imported from [30] — [80]'s contract only permits
+// read-only WorldState from [30], not its internals, so it can't import VALID_STANCES any
+// more than [50] could. Same graceful-degradation reasoning as [50]'s ORDER_TARGET_PRIORITIES
+// below: [30]'s own validation is the real source of truth and silently falls back to a safe
+// default if this list ever drifts stale.
+//
+// C13: the stance control is now a real selectable input, mirroring target priority exactly.
+// [30] has consumed stance behaviorally since C09 (filterByStance) — this session only removes
+// the [80]-side block that kept it unreachable through normal play. ORDERS_STANCE_FIXED is
+// gone; the default selection is just the first list entry ('AllUnits'), same pattern as
+// targetPriorities' default below, not a designed "default stance" — DESIGN.md doesn't specify
+// one, so this picks whichever sorts first rather than asserting a preference.
+const ORDERS_STANCES = ['AllUnits', 'MixedPush', 'RushBase'];
+
+// Reads ORDER_TARGET_PRIORITIES from [50] as its catalog of legal choices — still a
+// placeholder standing in for a not-yet-formalized source of truth (unlike the buy-phase
+// catalog above, which is now real as of C12), marked as such at its definition site in [50].
+//
+// initOrdersUI never touches WorldState directly — it only ever builds a plain
+// {stance, targetPriority} plan and hands it to the commander via submitOrders(), mirroring
+// initBuyPhaseUI/submitLoadout exactly.
+function initOrdersUI(container, commander, targetPriorities) {
+  container.innerHTML = '';
+  container.classList.add('orders-phase-active');
+
+  let selectedStance = ORDERS_STANCES[0];
+  let selectedPriority = targetPriorities[0];
+
+  const heading = document.createElement('h2');
+  heading.textContent = 'Stance & Target Priority';
+  container.appendChild(heading);
+
+  const stanceRow = document.createElement('div');
+  stanceRow.className = 'orders-row';
+  const stanceLabel = document.createElement('span');
+  stanceLabel.className = 'orders-label';
+  stanceLabel.textContent = 'Stance';
+  const stanceSelect = document.createElement('select');
+  ORDERS_STANCES.forEach((s) => {
+    const opt = document.createElement('option');
+    opt.value = s;
+    opt.textContent = s;
+    if (s === selectedStance) opt.selected = true;
+    stanceSelect.appendChild(opt);
+  });
+  stanceSelect.onchange = () => { selectedStance = stanceSelect.value; };
+  stanceRow.append(stanceLabel, stanceSelect);
+  container.appendChild(stanceRow);
+
+  const priorityRow = document.createElement('div');
+  priorityRow.className = 'orders-row';
+  const priorityLabel = document.createElement('span');
+  priorityLabel.className = 'orders-label';
+  priorityLabel.textContent = 'Target priority';
+  const prioritySelect = document.createElement('select');
+  targetPriorities.forEach((p) => {
+    const opt = document.createElement('option');
+    opt.value = p;
+    opt.textContent = p;
+    prioritySelect.appendChild(opt);
+  });
+  prioritySelect.onchange = () => { selectedPriority = prioritySelect.value; };
+  priorityRow.append(priorityLabel, prioritySelect);
+  container.appendChild(priorityRow);
+
+  const submitBtn = document.createElement('button');
+  submitBtn.textContent = 'Confirm Orders';
+  submitBtn.className = 'orders-submit';
+  submitBtn.onclick = () => {
+    container.classList.remove('orders-phase-active');
+    container.innerHTML = '';
+    commander.submitOrders({ stance: selectedStance, targetPriority: selectedPriority });
+  };
+  container.appendChild(submitBtn);
+}
+
+
+// ══════════════════════════════════════════════════════════
+// [90] BOOTSTRAP — wire it up, start the loop
+// EXPORTS: (none — entry point)
+// MAY USE:  [10]-[80]
+// MUST NOT: contain game logic; wiring only
+// Note: this is a module script, so top-level `await` (used below to await
+// both commanders' loadouts before either is touched) is valid here.
+// ══════════════════════════════════════════════════════════
+
+const log = (line) => {
+  console.log(line);
+  document.getElementById('log').textContent += line + '\n';
+};
+
+const SEED = 12345;
+
+// ---- Commander-produced loadouts (new in C03) ----
+// [60] MATCH FLOW doesn't exist yet, so bootstrap is standing in for it here
+// — but even this stand-in requests both loadouts and awaits both before
+// touching either result, which is the ordering [60] will own for real.
+// HumanCommander and AICommander are used side by side on purpose: bootstrap
+// (and later, match flow) cannot and does not tell them apart.
+
+const BUDGET = 100; // placeholder — economy isn't designed yet (DESIGN.md §5)
+
+// C12 wiring: [25]'s loadFromStorage() must run before any commander or UI
+// touches unit data (ARCHITECTURE.md's [90] contract), so a custom unit
+// saved in an earlier session is buyable from the very first buy phase.
+loadFromStorage();
+
+const commanderA = new HumanCommander(SEED + 1);
+const commanderB = new AICommander(SEED + 2);
+
+// commanderA.chooseLoadout() no longer resolves instantly (C04) — it resolves when the
+// buy-phase UI below calls commanderA.submitLoadout(). The Promise executor runs
+// synchronously, so calling chooseLoadout() here already arms that hook regardless of
+// when initBuyPhaseUI actually mounts.
+const loadoutPromiseA = commanderA.chooseLoadout(BUDGET, 'A', {});
+const loadoutPromiseB = commanderB.chooseLoadout(BUDGET, 'B', {});
+
+// C15 wiring: the new unit-creation panel is an optional step ahead of the buy phase — the
+// same "mount next phase from a completion callback" pattern already used below to hand off
+// from buy phase to orders phase. buyableCatalog() is called inside the callback (not before
+// it), so anything the player just created is already present in the very first buy-phase
+// render — no separate refresh path needed, since [50]'s buyableCatalog() re-reads
+// listCustomUnits() fresh on every call (C12).
+function startBuyPhase() {
+  initBuyPhaseUI(document.getElementById('buy-phase'), commanderA, BUDGET, buyableCatalog('A'));
+  log('Waiting for Commander A (Human) to submit a loadout...');
+}
+initUnitCreationUI(document.getElementById('unit-creation'), startBuyPhase);
+
+const [loadoutPlanA, loadoutPlanB] = await Promise.all([loadoutPromiseA, loadoutPromiseB]);
+
+const loadoutA = loadoutPlanA.units;
+const loadoutB = loadoutPlanB.units;
+
+log(`Commander A (Human, stand-in) fielded ${loadoutA.length} units`);
+log(`Commander B (AI, Easy) fielded ${loadoutB.length} units`);
+
+// Exercises chooseOrders too, so both interface methods are proven live.
+// [30] now consumes targetPriority (stance is stored but not yet branched
+// on — see [30]'s note). As of C07, commanderA.chooseOrders() no longer
+// resolves via a stub — it resolves when the orders panel below calls
+// commanderA.submitOrders(). Same synchronous-executor timing as the buy
+// phase: calling chooseOrders() arms the hook before initOrdersUI is wired.
+const ordersPromiseA = commanderA.chooseOrders([], []);
+const ordersPromiseB = commanderB.chooseOrders([], []);
+
+initOrdersUI(document.getElementById('orders-phase'), commanderA, ORDER_TARGET_PRIORITIES);
+log('Waiting for Commander A (Human) to submit orders...');
+
+const [ordersA, ordersB] = await Promise.all([ordersPromiseA, ordersPromiseB]);
+log(`Commander A orders: stance=${ordersA.stance} targetPriority=${ordersA.targetPriority}`);
+log(`Commander B orders: stance=${ordersB.stance} targetPriority=${ordersB.targetPriority}`);
+
+// ---- Instant headless run + determinism check ----
+// C08: stop condition is now [40]'s baseDestruction, not wipeout. Wipeout on
+// its own no longer ends anything — a side with zero units left but a
+// standing base just has nothing to fight until the enemy reaches that base,
+// which is the intended DESIGN.md behavior (annihilation isn't a v1 win
+// condition; base destruction is the only one).
+
+const MAX_TICKS = 20 * 90; // bumped from 60s (C01) — bases sit further out
+                            // (BASE_X=130) than the old wipeout-only checks
+                            // ever needed to account for; still a placeholder
+                            // safety cap, not a designed round-timer (DESIGN.md §5).
+
+function runToCompletion(seed) {
+  const world = createWorld(seed, loadoutA, loadoutB, ordersA, ordersB);
+  while (world.tick < MAX_TICKS) {
+    stepWorld(world);
+    if (baseDestruction(world)) break;
+  }
+  return world;
+}
+
+const headlessWorld = runToCompletion(SEED);
+const headlessWinner = baseDestruction(headlessWorld);
+
+log(`Match ended at tick ${headlessWorld.tick} (t=${headlessWorld.time.toFixed(2)}s) ` +
+    `— winner: ${headlessWinner ?? 'none (hit MAX_TICKS safety cap)'}`);
+for (const u of headlessWorld.units) {
+  log(`  ${u.id} [${u.faction}] hp=${Math.max(0, u.hp).toFixed(1)} alive=${u.alive}`);
+}
+
+const worldCheck = runToCompletion(SEED);
+const identical =
+  headlessWorld.tick === worldCheck.tick &&
+  JSON.stringify(headlessWorld.units) === JSON.stringify(worldCheck.units);
+
+log(`\nDeterminism check (same seed, rerun): ${identical ? 'PASS' : 'FAIL'}`);
+
+// ---- Live, rendered match (new in C02) ----
+// A fresh world, stepped in real time at a fixed 20Hz tick, decoupled from
+// the render rate via an accumulator. The renderer only ever reads it.
+
+function snapshotPositions(world) {
+  const unitsById = new Map();
+  for (const u of world.units) {
+    unitsById.set(u.id, { pos: { ...u.pos }, alive: u.alive });
+  }
+  // 2026-09-23: projectiles too, so [70] interpolates them like units.
+  const projectilesById = new Map();
+  for (const p of world.projectiles) {
+    projectilesById.set(p.id, { pos: { ...p.pos } });
+  }
+  return { unitsById, projectilesById };
+}
+
+const liveWorld = createWorld(SEED, loadoutA, loadoutB, ordersA, ordersB);
+const TICK_DT = liveWorld.dt; // 1/20, sourced from [30] rather than restated here
+
+const viewport = document.getElementById('viewport');
+initRenderer(viewport, liveWorld);
+document.getElementById('camera-reset').addEventListener('click', resetCommanderView);
+
+let prevSnapshot = snapshotPositions(liveWorld);
+let accumulator = 0;
+let lastTime = performance.now();
+
+// C08: the live match now stops on [40]'s baseDestruction result instead of
+// ticking forever past wipeout. This is still a [90]-level stand-in for
+// real [60] MATCH FLOW (which will own round loop / budget / persistence
+// later) — same "stand in until the real section exists" pattern as C04–C07
+// used for loadouts and orders before [50]/[80] existed.
+let liveWinner = null;
+
+function frame(now) {
+  requestAnimationFrame(frame);
+
+  let delta = (now - lastTime) / 1000;
+  lastTime = now;
+  delta = Math.min(delta, 0.25); // clamp big pauses (tab backgrounded, breakpoint, etc.)
+
+  accumulator += delta;
+  while (!liveWinner && accumulator >= TICK_DT) {
+    prevSnapshot = snapshotPositions(liveWorld);
+    stepWorld(liveWorld);
+    accumulator -= TICK_DT;
+
+    const winner = baseDestruction(liveWorld);
+    if (winner) {
+      liveWinner = winner;
+      log(`Live match ended at tick ${liveWorld.tick} (t=${liveWorld.time.toFixed(2)}s) ` +
+          `— Commander ${winner} wins!`);
+      break;
+    }
+  }
+
+  // Once decided, freeze on the final tick's real positions (alpha=1)
+  // rather than continuing to interpolate against a stale accumulator.
+  const alpha = liveWinner ? 1 : accumulator / TICK_DT;
+  renderFrame(prevSnapshot, liveWorld, alpha);
+}
+
+requestAnimationFrame(frame);
+
+</script>
+</body>
+</html>
