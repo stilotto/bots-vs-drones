@@ -115,7 +115,7 @@ STATUS
   custom-unit editing), [90] (stands in for [60], single round).
   Not started: [60] match flow, [85] balance harness.
   v17 passes headless checks; NOT YET SEEN IN A BROWSER. Director camera
-  (#10) passes a headless render smoke test; also not yet seen in a browser.
+  (#10) and random battle button (#11) seen working in a browser 09-24.
 
 NEXT UP
   1. Fix whatever the first in-browser look at v17 turns up.
