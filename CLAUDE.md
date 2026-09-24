@@ -88,6 +88,10 @@ DECISIONS (date · decision · why · rejected)
         game_vNN.html (git history replaces version numbers); these notes
         moved from the file header to CLAUDE.md; open work tracked as GitHub
         Issues · rejected re-uploading the file each chat session.
+  09-24 Director camera is the default view (#10): cycles overhead orbit,
+        chase cam, impact shot; any drag/scroll/touch hands over to manual.
+        [70] infers hits from hp drops between frames until [30] -> [70] hit
+        events are designed · rejected adding sim hit events for this.
 
 PARKED (not rejected, not now)
   Multiplayer · unit carryover · base upgrades/repair/shields · alternate win
@@ -105,7 +109,8 @@ STATUS
   destruction only), [50] (Easy AI only), [80] (no HUD/round summary, no
   custom-unit editing), [90] (stands in for [60], single round).
   Not started: [60] match flow, [85] balance harness.
-  v17 passes headless checks; NOT YET SEEN IN A BROWSER.
+  v17 passes headless checks; NOT YET SEEN IN A BROWSER. Director camera
+  (#10) passes a headless render smoke test; also not yet seen in a browser.
 
 NEXT UP
   1. Fix whatever the first in-browser look at v17 turns up.
@@ -121,6 +126,8 @@ KNOWN ISSUES / FACTS
   - Budget 100, base HP 500, base x=±130, MAX_TICKS 90s: all placeholders.
   - AI draws are deterministic per SEED; change SEED to see variety.
   - Commander view is hardcoded behind side A.
+  - Camera mode toggle lives in the camera bar until the settings panel (#9)
+    exists; the choice is not saved between sessions.
 
 SESSION HISTORY (one line each; detail lives in the code comments)
   D01 plan · C01 sim · C02 renderer · C03 commanders · C04 buy UI ·
@@ -129,5 +136,5 @@ SESSION HISTORY (one line each; detail lives in the code comments)
   C10 content tables · C11 registry · C12 wiring · C13 stance UI ·
   C14 AI stance · C15 unit creation UI · D05 damage model · C16 projectiles
   in sim · C17 terrain, flight, deploy, factions, renderer rebuild, camera ·
-  C18 moved to GitHub (no code changes).
+  C18 moved to GitHub (no code changes) · C19 director camera (#10).
 ```

@@ -68,6 +68,7 @@ CLAUDE.md at the repo root. Per-section contracts live in each section's banner.
     display: flex; align-items: center; gap: 0.75rem; color: #555;
   }
   #camera-bar button { padding: 0.3rem 0.8rem; }
+  #camera-bar button[aria-pressed="true"] { font-weight: bold; }
 </style>
 </head>
 <body>
@@ -75,8 +76,9 @@ CLAUDE.md at the repo root. Per-section contracts live in each section's banner.
 <div id="buy-phase"></div>
 <div id="orders-phase"></div>
 <div id="camera-bar">
-  <button id="camera-reset" type="button">Commander view</button>
-  <span>Drag to orbit, scroll to zoom.</span>
+  <button id="camera-director" type="button" aria-pressed="true">Director</button>
+  <button id="camera-reset" type="button" aria-pressed="false">Commander view</button>
+  <span id="camera-hint">Drag or scroll to take the camera.</span>
 </div>
 <div id="viewport" style="width: 100vw; height: 70vh; display: block;"></div>
 <pre id="log" style="font-family: monospace; white-space: pre-wrap; padding: 1rem;"></pre>
@@ -1268,7 +1270,7 @@ class AICommander {
 
 // ══════════════════════════════════════════════════════════
 // [70] RENDERER — three.js scene, InstancedMesh pools, camera, interpolation
-// EXPORTS: initRenderer, renderFrame, resetCommanderView
+// EXPORTS: initRenderer, renderFrame, resetCommanderView, setCameraMode, onCameraModeChange
 // MAY USE:  [10] utils (incl. terrainHeight), [20] content tables, read-only WorldState
 // MUST NOT: mutate world state, or advance the sim
 // ══════════════════════════════════════════════════════════
@@ -1289,6 +1291,13 @@ class AICommander {
 //  - Camera: starts in "commander view" (low, behind your base, looking at
 //    the enemy). OrbitControls stay live; resetCommanderView() snaps back.
 //    Floor clamp (D03) is now terrain-aware.
+//  - 2026-09-24 (#10): camera has two modes. 'director' (the default) cuts
+//    between shots on its own: an overhead orbit, a chase cam behind one
+//    unit, and an impact shot on where hits are landing. 'manual' is the
+//    orbit camera above. Any drag/scroll/touch in director mode hands the
+//    camera over to manual from where it is. Hits are inferred here from hp
+//    drops between frames (read-only), standing in for the undesigned
+//    [30] -> [70] hit event signaling. Uses real frame time, never sim time.
 
 const MAX_UNITS_PER_POOL = 200;       // DESIGN.md performance budget, per side
 const MAX_PROJECTILES_PER_FACTION = 1500;
@@ -1407,6 +1416,8 @@ function initRenderer(container, world) {
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
   controls.maxDistance = 600;
+  // #10: any user drag/scroll/touch takes the camera over from the director.
+  controls.addEventListener('start', () => setCameraMode('manual'));
 
   scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x2a2a22, 0.9));
   const sun = new THREE.DirectionalLight(0xfff1dc, 1.4);
@@ -1441,6 +1452,7 @@ function initRenderer(container, world) {
   }
 
   resetCommanderView();
+  setCameraMode('director'); // #10: director is the default until settings (#9) exist
 
   window.addEventListener('resize', () => {
     camera.aspect = container.clientWidth / container.clientHeight;
@@ -1456,10 +1468,144 @@ function initRenderer(container, world) {
 // human is always side A for now; if that ever changes, pass the side in.
 function resetCommanderView() {
   if (!camera) return;
+  setCameraMode('manual');
   const camX = -168, camZ = 0;
   camera.position.set(camX, groundY(camX, camZ) + 24, camZ);
   controls.target.set(-20, groundY(-20, 0) + 2, 0);
   controls.update();
+}
+
+// ---- Director camera (#10) ----
+const DIRECTOR_SHOT_SECONDS = 6;
+const DIRECTOR_HIT_MEMORY = 2;        // seconds of hits the impact shot looks at
+const DIRECTOR_SHOTS = ['orbit', 'chase', 'impact'];
+const BASE_HIT_WEIGHT = 3;            // base hits pull the impact shot harder
+
+let cameraMode = 'director';
+let cameraModeListener = null;
+const director = {
+  shot: null, shotIndex: -1, shotStart: 0, shotCount: 0, lastNow: 0,
+  chaseId: null, orbitAngle: Math.PI, impactAngle: 0,
+  pos: new THREE.Vector3(), look: new THREE.Vector3(),
+};
+const lastHpById = new Map();
+const recentHits = [];                // { x, y, z, w, at }, oldest first
+const wantPos = new THREE.Vector3();
+const wantLook = new THREE.Vector3();
+
+function setCameraMode(mode) {
+  if (mode !== 'director' && mode !== 'manual') return;
+  if (mode === cameraMode) return;
+  cameraMode = mode;
+  if (mode === 'director') {
+    director.shot = null; // next frame opens with a fresh cut
+  } else if (controls) {
+    controls.target.copy(director.look); // pick up from exactly where the director was looking
+    controls.update();
+  }
+  if (cameraModeListener) cameraModeListener(mode);
+}
+
+function onCameraModeChange(fn) { cameraModeListener = fn; }
+
+function hitFocus(now) {
+  let sx = 0, sy = 0, sz = 0, sw = 0;
+  for (const h of recentHits) {
+    const w = h.w * Math.max(0.05, 1 - (now - h.at) / DIRECTOR_HIT_MEMORY);
+    sx += h.x * w; sy += h.y * w; sz += h.z * w; sw += w;
+  }
+  return sw > 0 ? { x: sx / sw, y: sy / sw, z: sz / sw } : null;
+}
+
+function shotAvailable(shot, fighters) {
+  if (shot === 'chase') return fighters.length > 0;
+  if (shot === 'impact') return recentHits.length > 0;
+  return true;
+}
+
+function startNextShot(fighters, now) {
+  let idx = director.shotIndex;
+  for (let i = 0; i < DIRECTOR_SHOTS.length; i++) {
+    idx = (idx + 1) % DIRECTOR_SHOTS.length;
+    if (shotAvailable(DIRECTOR_SHOTS[idx], fighters)) break;
+  }
+  director.shotIndex = idx;
+  director.shot = DIRECTOR_SHOTS[idx];
+  director.shotStart = now;
+  director.shotCount++;
+
+  if (director.shot === 'chase') {
+    // Prefer a unit near the fighting; otherwise rotate through the roster.
+    const focus = hitFocus(now);
+    let pick = fighters[(director.shotCount * 7) % fighters.length];
+    if (focus) {
+      let best = Infinity;
+      for (const f of fighters) {
+        if (f.id === director.chaseId && fighters.length > 1) continue;
+        const d = (f.x - focus.x) ** 2 + (f.z - focus.z) ** 2;
+        if (d < best) { best = d; pick = f; }
+      }
+    }
+    director.chaseId = pick.id;
+  } else if (director.shot === 'impact') {
+    director.impactAngle = director.shotCount * 2.1; // vary the side we watch from
+  }
+  return true; // a new shot is a cut
+}
+
+// fighters: alive non-base units at their interpolated render positions.
+function updateDirector(fighters, now, dt) {
+  const chased = director.shot === 'chase' ? fighters.find(f => f.id === director.chaseId) : null;
+  let cut = false;
+  if (!director.shot
+      || now - director.shotStart > DIRECTOR_SHOT_SECONDS
+      || (director.shot === 'chase' && !chased)
+      || (director.shot === 'impact' && recentHits.length === 0)) {
+    cut = startNextShot(fighters, now);
+  }
+
+  let cx = 0, cz = 0, spread = 0;
+  if (fighters.length) {
+    for (const f of fighters) { cx += f.x; cz += f.z; }
+    cx /= fighters.length; cz /= fighters.length;
+    for (const f of fighters) spread = Math.max(spread, Math.hypot(f.x - cx, f.z - cz));
+  }
+
+  let rate = 3;
+  if (director.shot === 'chase') {
+    const f = fighters.find(u => u.id === director.chaseId);
+    const h = headingById.has(f.id) ? headingById.get(f.id) : (f.faction === 'A' ? Math.PI / 2 : -Math.PI / 2);
+    const fx = Math.sin(h), fz = Math.cos(h);
+    wantPos.set(f.x - fx * 14, f.y + 5, f.z - fz * 14);
+    wantLook.set(f.x + fx * 20, f.y + 1, f.z + fz * 20);
+    rate = 5;
+  } else if (director.shot === 'impact') {
+    const p = hitFocus(now);
+    director.impactAngle += dt * 0.08;
+    const a = director.impactAngle, d = 38;
+    wantPos.set(p.x + Math.cos(a) * d, p.y + 20, p.z + Math.sin(a) * d);
+    wantLook.set(p.x, p.y, p.z);
+    rate = 2.5;
+  } else { // orbit
+    director.orbitAngle += dt * 0.12;
+    const a = director.orbitAngle;
+    const r = Math.min(170, Math.max(70, spread * 1.1 + 40));
+    wantPos.set(cx + Math.cos(a) * r, groundY(cx, cz) + 55 + r * 0.25, cz + Math.sin(a) * r);
+    wantLook.set(cx, groundY(cx, cz) + 2, cz);
+  }
+  const floor = groundY(wantPos.x, wantPos.z) + 3;
+  if (wantPos.y < floor) wantPos.y = floor;
+
+  if (cut) {
+    director.pos.copy(wantPos);
+    director.look.copy(wantLook);
+  } else {
+    const k = 1 - Math.exp(-dt * rate);
+    director.pos.lerp(wantPos, k);
+    director.look.lerp(wantLook, k);
+  }
+  camera.position.copy(director.pos);
+  camera.lookAt(director.look);
 }
 
 function lerp(a, b, t) { return a + (b - a) * t; }
@@ -1492,6 +1638,11 @@ function renderFrame(worldPrev, worldCurr, alpha) {
   const t = Math.max(0, (worldCurr.tick - 1 + alpha)) * dt;
   const deploySecs = (worldCurr.deployTicks || 0) * dt;
 
+  const now = performance.now() / 1000;
+  const realDt = director.lastNow ? Math.min(0.1, now - director.lastNow) : 0;
+  director.lastNow = now;
+  const fighters = [];
+
   const counts = {};
   for (const k of Object.keys(unitPools)) counts[k] = 0;
   const baseCounts = {};
@@ -1502,6 +1653,14 @@ function renderFrame(worldPrev, worldCurr, alpha) {
 
     const prevUnit = prevUnits ? prevUnits.get(unit.id) : null;
     const pos = prevUnit && prevUnit.alive ? interpPos(prevUnit.pos, unit.pos, alpha) : unit.pos;
+
+    // Director (#10): an hp drop since last frame is a hit landing here.
+    const lastHp = lastHpById.get(unit.id);
+    if (lastHp !== undefined && unit.hp < lastHp) {
+      recentHits.push({ x: pos.x, y: pos.y, z: pos.z,
+        w: (lastHp - unit.hp) * (unit.isBase ? BASE_HIT_WEIGHT : 1), at: now });
+    }
+    lastHpById.set(unit.id, unit.hp);
 
     if (unit.isBase) {
       const mesh = basePools[unit.faction];
@@ -1549,7 +1708,9 @@ function renderFrame(worldPrev, worldCurr, alpha) {
     dummy.updateMatrix();
     mesh.setMatrixAt(idx, dummy.matrix);
     counts[key] = idx + 1;
+    fighters.push({ id: unit.id, faction: unit.faction, x: pos.x, y, z: pos.z });
   }
+  while (recentHits.length && now - recentHits[0].at > DIRECTOR_HIT_MEMORY) recentHits.shift();
 
   for (const [k, mesh] of Object.entries(unitPools)) {
     mesh.count = counts[k];
@@ -1583,7 +1744,8 @@ function renderFrame(worldPrev, worldCurr, alpha) {
     mesh.instanceMatrix.needsUpdate = true;
   }
 
-  controls.update();
+  if (cameraMode === 'director') updateDirector(fighters, now, realDt);
+  else controls.update();
   // D03 floor, now terrain-aware: applied after controls.update() every frame.
   const floor = groundY(camera.position.x, camera.position.z) + CAMERA_FLOOR_CLEARANCE;
   if (camera.position.y < floor) camera.position.y = floor;
@@ -2165,6 +2327,14 @@ const TICK_DT = liveWorld.dt; // 1/20, sourced from [30] rather than restated he
 const viewport = document.getElementById('viewport');
 initRenderer(viewport, liveWorld);
 document.getElementById('camera-reset').addEventListener('click', resetCommanderView);
+document.getElementById('camera-director').addEventListener('click', () => setCameraMode('director'));
+onCameraModeChange((mode) => {
+  document.getElementById('camera-director').setAttribute('aria-pressed', String(mode === 'director'));
+  document.getElementById('camera-reset').setAttribute('aria-pressed', String(mode === 'manual'));
+  document.getElementById('camera-hint').textContent = mode === 'director'
+    ? 'Drag or scroll to take the camera.'
+    : 'Drag to orbit, scroll to zoom.';
+});
 
 let prevSnapshot = snapshotPositions(liveWorld);
 let accumulator = 0;
