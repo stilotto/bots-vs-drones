@@ -136,5 +136,6 @@ SESSION HISTORY (one line each; detail lives in the code comments)
   C10 content tables · C11 registry · C12 wiring · C13 stance UI ·
   C14 AI stance · C15 unit creation UI · D05 damage model · C16 projectiles
   in sim · C17 terrain, flight, deploy, factions, renderer rebuild, camera ·
-  C18 moved to GitHub (no code changes) · C19 director camera (#10).
+  C18 moved to GitHub (no code changes) · C19 director camera (#10) ·
+  C20 random battle button (#11).
 ```

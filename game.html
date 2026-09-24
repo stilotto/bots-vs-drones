@@ -72,6 +72,7 @@ CLAUDE.md at the repo root. Per-section contracts live in each section's banner.
 </style>
 </head>
 <body>
+<div id="random-battle" style="padding: 1rem 1rem 0;"></div>
 <div id="unit-creation"></div>
 <div id="buy-phase"></div>
 <div id="orders-phase"></div>
@@ -1755,7 +1756,7 @@ function renderFrame(worldPrev, worldCurr, alpha) {
 
 // ══════════════════════════════════════════════════════════
 // [80] UI — buy phase, stance/priority pickers, HUD, round summary
-// EXPORTS: initBuyPhaseUI, initOrdersUI, initUnitCreationUI
+// EXPORTS: initBuyPhaseUI, initOrdersUI, initUnitCreationUI, initRandomBattleUI
 // MAY USE:  [10] utils, [20] content tables, [25] custom unit registry, [50] commanders
 //           (to submit human choices), read-only WorldState
 // MUST NOT: mutate unit stats or world state directly. All player influence enters the sim
@@ -2190,6 +2191,48 @@ function initOrdersUI(container, commander, targetPriorities) {
   container.appendChild(submitBtn);
 }
 
+// Random battle button (#11), a debugging convenience. One click picks a random loadout
+// within budget plus random stance/priority, then hands both plans to `onPick` — the caller
+// (bootstrap) submits them through the commander exactly like the buy and orders panels do.
+// The seed comes from Math.random (fine here: [80] is outside the deterministic sim), then
+// everything else flows from [10]'s seeded RNG so the logged seed + summary describe the pick.
+// Same fill-the-budget rule as [50]'s Easy AI (randomValidLoadout), duplicated because that
+// helper isn't a [50] export and returns specs without names, which the log needs.
+function initRandomBattleUI(container, budget, faction, targetPriorities, onPick) {
+  container.innerHTML = '';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.textContent = 'Random battle';
+  btn.onclick = () => {
+    const seed = Math.floor(Math.random() * 0x7fffffff);
+    const rng = makeRNG(seed);
+    const catalog = buyableCatalog(faction);
+    const picked = [];
+    let remaining = budget;
+    while (catalog.some(s => s.cost <= remaining)) {
+      const affordable = catalog.filter(s => s.cost <= remaining);
+      const pick = affordable[rng.int(affordable.length)];
+      picked.push(pick);
+      remaining -= pick.cost;
+    }
+    const orders = {
+      stance: ORDERS_STANCES[rng.int(ORDERS_STANCES.length)],
+      targetPriority: targetPriorities[rng.int(targetPriorities.length)],
+    };
+    const counts = {};
+    for (const p of picked) counts[p.name] = (counts[p.name] || 0) + 1;
+    const summary = Object.entries(counts).map(([n, c]) => `${c}x ${n}`).join(', ') || 'no units';
+    container.innerHTML = '';
+    onPick({
+      seed,
+      summary,
+      loadout: { units: picked.map(resolveUnitSimSpec), upgrades: [] },
+      orders,
+    });
+  };
+  container.appendChild(btn);
+}
+
 
 // ══════════════════════════════════════════════════════════
 // [90] BOOTSTRAP — wire it up, start the loop
@@ -2243,7 +2286,24 @@ function startBuyPhase() {
 }
 initUnitCreationUI(document.getElementById('unit-creation'), startBuyPhase);
 
+// #11: one-click random battle for debugging. Skips the setup panels, but the picks still
+// enter through commanderA's plan channels. Orders are held until chooseOrders() is armed below.
+let randomOrdersA = null;
+initRandomBattleUI(document.getElementById('random-battle'), BUDGET, 'A', ORDER_TARGET_PRIORITIES,
+  (pick) => {
+    for (const [id, cls] of [['unit-creation', 'unit-creation-active'], ['buy-phase', 'buy-phase-active']]) {
+      const el = document.getElementById(id);
+      el.classList.remove(cls);
+      el.innerHTML = '';
+    }
+    randomOrdersA = pick.orders;
+    log(`Random battle (seed ${pick.seed}): ${pick.summary}; ` +
+        `stance=${pick.orders.stance} targetPriority=${pick.orders.targetPriority}`);
+    commanderA.submitLoadout(pick.loadout);
+  });
+
 const [loadoutPlanA, loadoutPlanB] = await Promise.all([loadoutPromiseA, loadoutPromiseB]);
+document.getElementById('random-battle').innerHTML = ''; // too late to randomize once bought
 
 const loadoutA = loadoutPlanA.units;
 const loadoutB = loadoutPlanB.units;
@@ -2260,8 +2320,12 @@ log(`Commander B (AI, Easy) fielded ${loadoutB.length} units`);
 const ordersPromiseA = commanderA.chooseOrders([], []);
 const ordersPromiseB = commanderB.chooseOrders([], []);
 
-initOrdersUI(document.getElementById('orders-phase'), commanderA, ORDER_TARGET_PRIORITIES);
-log('Waiting for Commander A (Human) to submit orders...');
+if (randomOrdersA) {
+  commanderA.submitOrders(randomOrdersA);
+} else {
+  initOrdersUI(document.getElementById('orders-phase'), commanderA, ORDER_TARGET_PRIORITIES);
+  log('Waiting for Commander A (Human) to submit orders...');
+}
 
 const [ordersA, ordersB] = await Promise.all([ordersPromiseA, ordersPromiseB]);
 log(`Commander A orders: stance=${ordersA.stance} targetPriority=${ordersA.targetPriority}`);
