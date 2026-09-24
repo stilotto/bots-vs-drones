@@ -11,6 +11,9 @@ session. The game itself is `game.html`, a single file with no build step.
   reference the issue number in commits (`Fixes #3`).
 - **History:** git log. Commit per logical change; don't keep versioned copies
   of the file.
+- **Trunk-based:** commit and push straight to `main`; no PRs needed. GitHub
+  Pages serves `main`, so a push is how the human reviews in a browser:
+  https://stilotto.github.io/bots-vs-drones/game.html
 - **Updating these notes:** at the end of a session, update STATUS, NEXT UP,
   KNOWN ISSUES and SESSION HISTORY below. Never delete a decision; supersede it
   with a new dated line.
@@ -88,6 +91,8 @@ DECISIONS (date · decision · why · rejected)
         game_vNN.html (git history replaces version numbers); these notes
         moved from the file header to CLAUDE.md; open work tracked as GitHub
         Issues · rejected re-uploading the file each chat session.
+  09-24 Trunk-based: push straight to main, GitHub Pages serves main for
+        browser review · rejected feature branches + PRs (two-person project).
   09-24 Director camera is the default view (#10): cycles overhead orbit,
         chase cam, impact shot; any drag/scroll/touch hands over to manual.
         [70] infers hits from hp drops between frames until [30] -> [70] hit
