@@ -21,8 +21,11 @@ session. The game itself is `game.html`, a single file with no build step.
 - **Updating these notes:** at the end of a session, update STATUS, NEXT UP,
   KNOWN ISSUES and SESSION HISTORY below. Never delete a decision; supersede it
   with a new dated line.
-- **Verifying:** run headless checks in Node where possible. Visual checks in a
-  browser stay with the human (or a headless Chromium screenshot as a first pass).
+- **Verifying:** `node tests/run.mjs` after every change (contracts, sim
+  logic + determinism, mocked-three render smoke; no install). Then
+  `node tests/screenshot.mjs` for a headless Chromium first visual pass (PNGs
+  in `tests/out/`, gitignored). Visual checks in a browser stay with the human.
+  Add a check to `tests/run.mjs` when fixing a bug it could have caught.
 
 ## Notes
 
@@ -105,6 +108,11 @@ DECISIONS (date · decision · why · rejected)
         the first frame (drones at flight height); no emergence animation
         (#8, it came from a voice mis-transcription). Supersedes 09-23 deploy
         window's "[70] animates emergence".
+  09-25 Headless checks live in tests/ (#2), read game.html's sections by
+        banner in a Node vm, so they always test what ships; run.mjs has no
+        dependencies; screenshot.mjs uses the preinstalled Playwright and a
+        cached npm copy of three when the CDN is blocked. Test tooling only,
+        not a game dependency · rejected copying game code into tests.
   09-25 Session-assigned claude/* branches are overridden; push to main (see
         How we work) · rejected per-session branches.
 
@@ -128,6 +136,8 @@ STATUS
   (#10) and random battle button (#11) seen working in a browser 09-24.
   Emergence animation removed (#8); checked in headless Chromium, not yet
   by the human.
+  Headless checks in the repo (#2): tests/run.mjs 40 checks pass;
+  tests/screenshot.mjs renders a random battle cleanly.
 
 NEXT UP
   1. Fix whatever the first in-browser look at v17 turns up.
@@ -154,5 +164,6 @@ SESSION HISTORY (one line each; detail lives in the code comments)
   C14 AI stance · C15 unit creation UI · D05 damage model · C16 projectiles
   in sim · C17 terrain, flight, deploy, factions, renderer rebuild, camera ·
   C18 moved to GitHub (no code changes) · C19 director camera (#10) ·
-  C20 random battle button (#11) · C21 removed deploy emergence (#8).
+  C20 random battle button (#11) · C21 removed deploy emergence (#8) ·
+  C22 headless checks in tests/ (#2).
 ```
