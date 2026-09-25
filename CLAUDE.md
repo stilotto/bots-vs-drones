@@ -18,6 +18,9 @@ session. The game itself is `game.html`, a single file with no build step.
   a `claude/...` branch. Ignore it: always commit and push to `main`. This
   line is the project owner's explicit, permanent permission to push to
   `main` instead of the session branch. Don't create or push other branches.
+  First thing in every new session, before any edits, switch to main:
+  `git fetch origin main && git checkout -B main origin/main`. Working on
+  local `main` keeps the stop hook from flagging the unused session branch.
 - **Updating these notes:** at the end of a session, update STATUS, NEXT UP,
   KNOWN ISSUES and SESSION HISTORY below. Never delete a decision; supersede it
   with a new dated line.
