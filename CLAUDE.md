@@ -120,6 +120,11 @@ DECISIONS (date · decision · why · rejected)
         How we work) · rejected per-session branches.
   09-25 Match SEED is random per page load, ?seed=N overrides · a fixed seed
         made every AI squad and map identical · rejected fixed SEED.
+  09-25 [85] balance harness (#4) plays real AICommanders against each other
+        (blind commit, same as live) and reports win rates overall and by
+        stance, target priority and unit type, plus fight lengths and
+        timeouts. Run with node tests/balance.mjs; [90] doesn't wire it in
+        yet · rejected a harness with its own random loadout picker.
 
 PARKED (not rejected, not now)
   Multiplayer · unit carryover · base upgrades/repair/shields · alternate win
@@ -136,22 +141,25 @@ STATUS
   Done: [10] [20] [25] [70]. Partial: [30] (armor not consumed), [40] (base
   destruction only), [50] (Easy AI only), [80] (no HUD/round summary, no
   custom-unit editing), [90] (stands in for [60], single round).
-  Not started: [60] match flow, [85] balance harness.
+  Done: [85] balance harness (#4), headless via tests/balance.mjs.
+  Not started: [60] match flow.
   v17 passes headless checks; NOT YET SEEN IN A BROWSER. Director camera
   (#10) and random battle button (#11) seen working in a browser 09-24.
   Emergence animation removed (#8); checked in headless Chromium, not yet
   by the human.
-  Headless checks in the repo (#2): tests/run.mjs 40 checks pass;
+  Headless checks in the repo (#2): tests/run.mjs 48 checks pass;
   tests/screenshot.mjs renders a random battle cleanly.
 
 NEXT UP
   1. Fix whatever the first in-browser look at v17 turns up.
-  2. Real [60] match flow: multiple rounds, persistent base HP, income.
-  3. [85] balance harness, pulled forward because of the imbalance below.
+  2. #5 balance, now measurable: stance matters far more than faction.
+  3. Real [60] match flow: multiple rounds, persistent base HP, income.
 
 KNOWN ISSUES / FACTS
-  - Bots beat drones ~3 of 4 random matchups; many fights hit the 90s cap
-    with a lone survivor chewing a base. Pre-existing, exposed by factions.
+  - Balance (node tests/balance.mjs, 200 matches, seed 1): A 46%, B 40%,
+    cap 15% (A leads 24 of 29 timeouts on base HP). So bots edge drones,
+    well short of the old "3 of 4" guess. The big skew is stance: RushBase
+    loses ~96% for A and ~73% for B. Decided fights average ~46s.
   - Shots ignore terrain and can pass through hills.
   - Custom drone units can be created but only the AI side can field them.
   - Side A acts first each tick (small first-mover edge); [40] gives B ties.
@@ -171,5 +179,6 @@ SESSION HISTORY (one line each; detail lives in the code comments)
   in sim · C17 terrain, flight, deploy, factions, renderer rebuild, camera ·
   C18 moved to GitHub (no code changes) · C19 director camera (#10) ·
   C20 random battle button (#11) · C21 removed deploy emergence (#8) ·
-  C22 headless checks in tests/ (#2) · C23 random match seed.
+  C22 headless checks in tests/ (#2) · C23 random match seed ·
+  C24 [85] balance harness (#4).
 ```

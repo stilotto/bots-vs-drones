@@ -24,16 +24,16 @@ const MAX_TICKS = 20 * 90; // mirrors [90]'s placeholder cap
 section('contracts');
 const { sections } = readSections();
 const ids = sections.map(s => s.id);
-check('sections present in order [10] [20] [25] [30] [40] [50] [70] [80] [90]',
-  JSON.stringify(ids) === JSON.stringify([10, 20, 25, 30, 40, 50, 70, 80, 90]), `got ${ids.join(' ')}`);
+check('sections present in order [10] [20] [25] [30] [40] [50] [70] [80] [85] [90]',
+  JSON.stringify(ids) === JSON.stringify([10, 20, 25, 30, 40, 50, 70, 80, 85, 90]), `got ${ids.join(' ')}`);
 
-for (const s of sections.filter(s => s.id <= 60)) {
+for (const s of sections.filter(s => s.id <= 60 || s.id === 85)) {
   const code = stripCode(s.code);
   const bad = ['THREE', 'document', 'window', 'requestAnimationFrame', 'OrbitControls']
     .filter(n => new RegExp(`\\b${n}\\b`).test(code));
   check(`[${s.id}] uses no THREE/DOM`, bad.length === 0, `references ${bad.join(', ')}`);
 }
-for (const s of sections.filter(s => [30, 40, 50].includes(s.id))) {
+for (const s of sections.filter(s => [30, 40, 50, 85].includes(s.id))) {
   check(`[${s.id}] uses no Math.random`, !/Math\.random/.test(stripCode(s.code)));
 }
 // Dependency flows downward only: no section names an export of a later one.
@@ -44,6 +44,14 @@ for (const s of sections) {
     .filter(([, n]) => new RegExp(`(?<![.\\w$])${n}\\b`).test(code));
   check(`[${s.id}] references no later section`, upward.length === 0,
     upward.map(([id, n]) => `[${id}] ${n}`).join(', '));
+}
+{ // [85] must never need [70]/[80] (CLAUDE.md architecture rules)
+  const code = stripCode(sections.find(s => s.id === 85).code);
+  const used = sections.filter(o => o.id === 70 || o.id === 80)
+    .flatMap(o => o.exports.map(n => [o.id, n]))
+    .filter(([, n]) => new RegExp(`(?<![.\\w$])${n}\\b`).test(code));
+  check('[85] references nothing from [70]/[80]', used.length === 0,
+    used.map(([id, n]) => `[${id}] ${n}`).join(', '));
 }
 
 // ---------------------------------------------------------------- logic
@@ -178,6 +186,26 @@ const fingerprint = w => JSON.stringify({ tick: w.tick, units: w.units, projecti
   reloaded.loadFromStorage();
   check('custom unit saves, joins its faction catalog, survives reload',
     inB && notInA && reloaded.listCustomUnits().some(u => u.id === saved.id));
+}
+
+// Balance harness: runs without [70]/[80], deterministic, sane totals
+{
+  const { api: B, context } = loadSections([...LOGIC, 85], { localStorage: memoryStorage() });
+  vm.runInContext(`Math.random = () => { throw new Error('Math.random called in [85]'); }`, context);
+  let threw = null, r1, r2;
+  try {
+    r1 = await B.runBalance({ matches: 6, seed: 42 });
+    r2 = await B.runBalance({ matches: 6, seed: 42 });
+  } catch (e) { threw = e; }
+  check('[85] runBalance runs headless with only [10]-[50] loaded',
+    !threw, threw && (threw.stack || String(threw)).split('\n').slice(0, 3).join('\n       '));
+  if (!threw) {
+    const o = r1.overall;
+    check('[85] tallies add up and match the runs', o.matches === 6 && o.A + o.B + o.timeout === 6 &&
+      r1.results.every(r => r.ticks <= r1.options.maxTicks && !r.loadouts.A.includes('?') && !r.loadouts.B.includes('?')));
+    check('[85] same seed -> same report', JSON.stringify(r1) === JSON.stringify(r2));
+    check('[85] formatBalanceReport gives text', /overall/.test(B.formatBalanceReport(r1)));
+  }
 }
 
 // ---------------------------------------------------------------- render

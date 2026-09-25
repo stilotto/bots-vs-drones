@@ -2214,6 +2214,127 @@ function initRandomBattleUI(container, budget, faction, targetPriorities, onPick
 
 
 // ══════════════════════════════════════════════════════════
+// [85] BALANCE HARNESS — headless seeded matchups, win rates, fight lengths
+// EXPORTS: runHeadlessMatch, runBalance, formatBalanceReport
+// MAY USE:  [10]-[60]
+// MUST NOT: need [70] renderer or [80] UI; touch THREE/DOM; use Math.random
+// ══════════════════════════════════════════════════════════
+
+// #4: runs AI-vs-AI matches with no renderer and reports who wins, how long
+// fights last and how many hit the time cap. Plans come from real
+// AICommanders (blind commit, same as a live match), so whatever tier the AI
+// is at is what gets measured. Everything is seeded: one base seed gives the
+// same report every time. Run from Node: node tests/balance.mjs [matches].
+//
+// BUDGET and MAX_TICKS mirror [90]'s placeholders ([60] will own them once it
+// exists); override per run through runBalance's options.
+const BALANCE_DEFAULTS = { matches: 200, seed: 1, budget: 100, maxTicks: 20 * 90 };
+
+// One match, start to finish. Commander seeds follow [90]'s pattern
+// (seed+1 for A, seed+2 for B). Returns a plain result, not the world.
+async function runHeadlessMatch(seed, { budget = BALANCE_DEFAULTS.budget, maxTicks = BALANCE_DEFAULTS.maxTicks } = {}) {
+  const a = new AICommander(seed + 1), b = new AICommander(seed + 2);
+  const [la, lb] = await Promise.all([a.chooseLoadout(budget, 'A', {}), b.chooseLoadout(budget, 'B', {})]);
+  const [oa, ob] = await Promise.all([a.chooseOrders([], []), b.chooseOrders([], [])]);
+  const world = createWorld(seed, la.units, lb.units, oa, ob);
+  let winner = null;
+  while (world.tick < maxTicks) {
+    stepWorld(world);
+    winner = baseDestruction(world);
+    if (winner) break;
+  }
+  const side = f => {
+    const base = world.units.find(u => u.isBase && u.faction === f);
+    const units = world.units.filter(u => !u.isBase && u.faction === f);
+    return {
+      baseHp: Math.max(0, base.hp),
+      fielded: units.length,
+      survivors: units.filter(u => u.alive).length,
+    };
+  };
+  return {
+    seed, winner, timeout: !winner, ticks: world.tick, seconds: world.time,
+    orders: { A: oa, B: ob },
+    loadouts: { A: la.units.map(unitTypeIdOf), B: lb.units.map(unitTypeIdOf) },
+    A: side('A'), B: side('B'),
+  };
+}
+
+// Resolved sim specs carry no type id, so map one back to its catalog entry
+// by comparing resolved stats. Two types with identical stats share a name.
+function unitTypeIdOf(spec) {
+  const key = JSON.stringify(spec);
+  const type = buyableCatalog().find(t => JSON.stringify(resolveUnitSimSpec(t)) === key);
+  return type ? type.id : '?';
+}
+
+// Runs `matches` matches on seeds derived from `seed` by [10]'s RNG and
+// aggregates them. A timeout counts for neither side; `timeoutLeader` says
+// which side had more base HP left when the cap hit (the fights #5 describes).
+async function runBalance(options = {}) {
+  const opts = { ...BALANCE_DEFAULTS, ...options };
+  const seeds = makeRNG(opts.seed);
+  const results = [];
+  for (let i = 0; i < opts.matches; i++) {
+    results.push(await runHeadlessMatch(seeds.int(0x7fffffff), opts));
+  }
+
+  const tally = () => ({ matches: 0, A: 0, B: 0, timeout: 0 });
+  const add = (t, r) => { t.matches++; t[r.winner ?? 'timeout']++; };
+  const overall = tally();
+  const timeoutLeader = { A: 0, B: 0, even: 0 };
+  const byStance = { A: {}, B: {} }, byPriority = { A: {}, B: {} }, byUnit = {};
+  for (const r of results) {
+    add(overall, r);
+    if (r.timeout) timeoutLeader[r.A.baseHp > r.B.baseHp ? 'A' : r.B.baseHp > r.A.baseHp ? 'B' : 'even']++;
+    for (const f of ['A', 'B']) {
+      add(byStance[f][r.orders[f].stance] ??= tally(), r);
+      add(byPriority[f][r.orders[f].targetPriority] ??= tally(), r);
+      for (const id of new Set(r.loadouts[f])) add(byUnit[id] ??= { faction: f, ...tally() }, r);
+    }
+  }
+  const decided = results.filter(r => !r.timeout).map(r => r.seconds).sort((x, y) => x - y);
+  const mean = xs => xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : 0;
+  return {
+    options: opts, results, overall, timeoutLeader, byStance, byPriority, byUnit,
+    fightSeconds: {
+      mean: mean(decided),
+      median: decided.length ? decided[decided.length >> 1] : 0,
+      min: decided[0] ?? 0,
+      max: decided[decided.length - 1] ?? 0,
+    },
+  };
+}
+
+// Plain-text report for the console. Percentages are of that row's matches.
+function formatBalanceReport(report) {
+  const { options: o, overall, timeoutLeader: tl, fightSeconds: fs } = report;
+  const pct = (n, d) => `${d ? Math.round(100 * n / d) : 0}%`.padStart(4);
+  const row = (label, t) =>
+    `  ${label.padEnd(22)} ${String(t.matches).padStart(4)}   A ${pct(t.A, t.matches)}   B ${pct(t.B, t.matches)}   cap ${pct(t.timeout, t.matches)}`;
+  const lines = [
+    `Balance: ${o.matches} AI-vs-AI matches, seed ${o.seed}, budget ${o.budget}, cap ${o.maxTicks / 20}s`,
+    row('overall', overall),
+    `  timeouts by base HP lead: A ${tl.A} · B ${tl.B} · even ${tl.even}`,
+    `  decided fights (s): mean ${fs.mean.toFixed(1)} · median ${fs.median.toFixed(1)} · ` +
+      `min ${fs.min.toFixed(1)} · max ${fs.max.toFixed(1)}`,
+  ];
+  for (const [title, table] of [['stance', report.byStance], ['target priority', report.byPriority]]) {
+    lines.push(`By ${title}:`);
+    for (const f of ['A', 'B']) {
+      for (const k of Object.keys(table[f]).sort()) lines.push(row(`${f} ${k}`, table[f][k]));
+    }
+  }
+  lines.push('By unit type (matches where that side fielded it):');
+  for (const id of Object.keys(report.byUnit).sort()) {
+    const t = report.byUnit[id];
+    lines.push(row(`${t.faction} ${id}`, t));
+  }
+  return lines.join('\n');
+}
+
+
+// ══════════════════════════════════════════════════════════
 // [90] BOOTSTRAP — wire it up, start the loop
 // EXPORTS: (none — entry point)
 // MAY USE:  [10]-[80]
