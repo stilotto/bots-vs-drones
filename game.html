@@ -625,9 +625,9 @@ const BASE_X = 130;   // ground plane is 300×300 ([70]); unit spawn line is x=�
 const AIR_CRUISE_ALTITUDE = 9; // placeholder — must stay below the shortest weapon range (20)
 
 // Deploy window (2026-09-23): nobody acts for the first DEPLOY_TICKS ticks.
-// Units spawn in place but are "coming out of the ground" — [70] animates
-// that emergence over the same window, so nothing fires while still buried.
-// Symmetric for both sides, so it changes pacing, not balance.
+// Units spawn in place (drones already at cruise altitude) and hold still.
+// 2026-09-25 (#8): [70] no longer animates an emergence; the pause is just a
+// beat before the fight. Symmetric for both sides: pacing, not balance.
 const DEPLOY_TICKS = 30; // 1.5s at 20Hz
 
 function groundAt(world, x, z) {
@@ -982,7 +982,7 @@ function stepWorld(world) {
     if (unit.alive && !unit.isBase) hasNonBaseAlive[unit.faction] = true;
   }
 
-  // Deploy window: units are still emerging; nobody moves, targets, or fires.
+  // Deploy window: nobody moves, targets, or fires yet.
   const deploying = world.tick < world.deployTicks;
 
   for (const unit of world.units) {
@@ -1287,8 +1287,8 @@ class AICommander {
 //  - Projectiles: world.projectiles as tracer streaks, interpolated between
 //    snapshots exactly like units. No impact effects — that's still gated on
 //    the undesigned hit/impact event signaling topic (DESIGN.md §5).
-//  - Emergence: during world.deployTicks, units rise out of the ground,
-//    staggered per unit. Purely cosmetic; [30] holds everyone still meanwhile.
+//  - Deploy: units are drawn where [30] puts them from the first frame
+//    (2026-09-25, #8: the rise-out-of-the-ground emergence was removed).
 //  - Camera: starts in "commander view" (low, behind your base, looking at
 //    the enemy). OrbitControls stay live; resetCommanderView() snaps back.
 //    Floor clamp (D03) is now terrain-aware.
@@ -1610,15 +1610,6 @@ function updateDirector(fighters, now, dt) {
 }
 
 function lerp(a, b, t) { return a + (b - a) * t; }
-function clamp01(t) { return t < 0 ? 0 : t > 1 ? 1 : t; }
-function easeOutCubic(t) { const u = 1 - t; return 1 - u * u * u; }
-
-// Stable per-unit stagger in [0, 1) from the id string — cosmetic only.
-function idStagger(id) {
-  let h = 2166136261;
-  for (let i = 0; i < id.length; i++) { h ^= id.charCodeAt(i); h = Math.imul(h, 16777619); }
-  return (h >>> 0) / 4294967296;
-}
 
 function interpPos(prev, curr, alpha) {
   if (!prev) return curr;
@@ -1633,11 +1624,6 @@ function renderFrame(worldPrev, worldCurr, alpha) {
 
   const prevUnits = worldPrev ? worldPrev.unitsById : null;
   const prevProj = worldPrev ? worldPrev.projectilesById : null;
-
-  // Render time in seconds, for the emergence animation.
-  const dt = worldCurr.dt || 1 / 20;
-  const t = Math.max(0, (worldCurr.tick - 1 + alpha)) * dt;
-  const deploySecs = (worldCurr.deployTicks || 0) * dt;
 
   const now = performance.now() / 1000;
   const realDt = director.lastNow ? Math.min(0.1, now - director.lastNow) : 0;
@@ -1694,14 +1680,7 @@ function renderFrame(worldPrev, worldCurr, alpha) {
       ? headingById.get(unit.id)
       : (unit.faction === 'A' ? Math.PI / 2 : -Math.PI / 2); // face the enemy on spawn
 
-    let y = pos.y + (category === 'ground' ? 0.6 : 0);
-    if (deploySecs > 0 && t < deploySecs) {
-      const start = idStagger(unit.id) * deploySecs * 0.55;
-      const e = easeOutCubic(clamp01((t - start) / (deploySecs * 0.45)));
-      const g = groundY(pos.x, pos.z);
-      if (category === 'ground') y = lerp(g - 2.5, y, e);           // rolls up out of the ground
-      else y = lerp(g - 2, pos.y, e);                               // lifts off from below grade
-    }
+    const y = pos.y + (category === 'ground' ? 0.6 : 0);
 
     dummy.position.set(pos.x, y, pos.z);
     dummy.rotation.set(0, heading, 0);

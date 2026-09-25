@@ -97,6 +97,10 @@ DECISIONS (date · decision · why · rejected)
         chase cam, impact shot; any drag/scroll/touch hands over to manual.
         [70] infers hits from hp drops between frames until [30] -> [70] hit
         events are designed · rejected adding sim hit events for this.
+  09-25 Deploy window keeps the 1.5s pause but [70] draws units in place from
+        the first frame (drones at flight height); no emergence animation
+        (#8, it came from a voice mis-transcription). Supersedes 09-23 deploy
+        window's "[70] animates emergence".
 
 PARKED (not rejected, not now)
   Multiplayer · unit carryover · base upgrades/repair/shields · alternate win
@@ -116,6 +120,8 @@ STATUS
   Not started: [60] match flow, [85] balance harness.
   v17 passes headless checks; NOT YET SEEN IN A BROWSER. Director camera
   (#10) and random battle button (#11) seen working in a browser 09-24.
+  Emergence animation removed (#8); checked in headless Chromium, not yet
+  by the human.
 
 NEXT UP
   1. Fix whatever the first in-browser look at v17 turns up.
@@ -142,5 +148,5 @@ SESSION HISTORY (one line each; detail lives in the code comments)
   C14 AI stance · C15 unit creation UI · D05 damage model · C16 projectiles
   in sim · C17 terrain, flight, deploy, factions, renderer rebuild, camera ·
   C18 moved to GitHub (no code changes) · C19 director camera (#10) ·
-  C20 random battle button (#11).
+  C20 random battle button (#11) · C21 removed deploy emergence (#8).
 ```
