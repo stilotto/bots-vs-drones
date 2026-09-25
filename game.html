@@ -2227,7 +2227,11 @@ const log = (line) => {
   document.getElementById('log').textContent += line + '\n';
 };
 
-const SEED = 12345;
+// Fresh seed per page load so the AI squad, terrain and battle rolls vary. Math.random is fine
+// here ([90] is outside the deterministic sim). `?seed=N` in the URL replays a logged game.
+const urlSeed = parseInt(new URLSearchParams(location.search).get('seed'), 10);
+const SEED = Number.isFinite(urlSeed) ? urlSeed : Math.floor(Math.random() * 0x7fffffff);
+log(`Match seed ${SEED} (add ?seed=${SEED} to the URL to replay)`);
 
 // ---- Commander-produced loadouts (new in C03) ----
 // [60] MATCH FLOW doesn't exist yet, so bootstrap is standing in for it here

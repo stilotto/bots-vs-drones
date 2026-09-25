@@ -118,6 +118,8 @@ DECISIONS (date · decision · why · rejected)
         not a game dependency · rejected copying game code into tests.
   09-25 Session-assigned claude/* branches are overridden; push to main (see
         How we work) · rejected per-session branches.
+  09-25 Match SEED is random per page load, ?seed=N overrides · a fixed seed
+        made every AI squad and map identical · rejected fixed SEED.
 
 PARKED (not rejected, not now)
   Multiplayer · unit carryover · base upgrades/repair/shields · alternate win
@@ -154,7 +156,8 @@ KNOWN ISSUES / FACTS
   - Custom drone units can be created but only the AI side can field them.
   - Side A acts first each tick (small first-mover edge); [40] gives B ties.
   - Budget 100, base HP 500, base x=±130, MAX_TICKS 90s: all placeholders.
-  - AI draws are deterministic per SEED; change SEED to see variety.
+  - SEED is random per page load (logged); ?seed=N replays the AI squad,
+    terrain and battle rolls. Random battle's own pick has its own seed.
   - Commander view is hardcoded behind side A.
   - Camera mode toggle lives in the camera bar until the settings panel (#9)
     exists; the choice is not saved between sessions.
@@ -168,5 +171,5 @@ SESSION HISTORY (one line each; detail lives in the code comments)
   in sim · C17 terrain, flight, deploy, factions, renderer rebuild, camera ·
   C18 moved to GitHub (no code changes) · C19 director camera (#10) ·
   C20 random battle button (#11) · C21 removed deploy emergence (#8) ·
-  C22 headless checks in tests/ (#2).
+  C22 headless checks in tests/ (#2) · C23 random match seed.
 ```
