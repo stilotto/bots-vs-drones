@@ -125,6 +125,13 @@ DECISIONS (date · decision · why · rejected)
         stance, target priority and unit type, plus fight lengths and
         timeouts. Run with node tests/balance.mjs; [90] doesn't wire it in
         yet · rejected a harness with its own random loadout picker.
+  09-25 RushBase (#5) flanks and fires on the move: each leaker heads for a
+        wing waypoint (FLANK_Z 110, FLANK_X 60 past midfield; the army splits
+        by spawn half) then the base, and shoots the nearest enemy in range
+        without stopping or turning aside. Supersedes "never engages enemy
+        units". Flank alone left rushing bots at 4% (drones chase them down)
+        · rejected return-fire-only (rushers died in the middle), dropping
+        RushBase from the AI's picks (hides it).
 
 PARKED (not rejected, not now)
   Multiplayer · unit carryover · base upgrades/repair/shields · alternate win
@@ -147,19 +154,19 @@ STATUS
   (#10) and random battle button (#11) seen working in a browser 09-24.
   Emergence animation removed (#8); checked in headless Chromium, not yet
   by the human.
-  Headless checks in the repo (#2): tests/run.mjs 48 checks pass;
+  Headless checks in the repo (#2): tests/run.mjs 49 checks pass;
   tests/screenshot.mjs renders a random battle cleanly.
 
 NEXT UP
   1. Fix whatever the first in-browser look at v17 turns up.
-  2. #5 balance, now measurable: stance matters far more than faction.
+  2. #5 balance: drones now lag (see KNOWN ISSUES) and 36% of fights time out.
   3. Real [60] match flow: multiple rounds, persistent base HP, income.
 
 KNOWN ISSUES / FACTS
-  - Balance (node tests/balance.mjs, 200 matches, seed 1): A 46%, B 40%,
-    cap 15% (A leads 24 of 29 timeouts on base HP). So bots edge drones,
-    well short of the old "3 of 4" guess. The big skew is stance: RushBase
-    loses ~96% for A and ~73% for B. Decided fights average ~46s.
+  - Balance (node tests/balance.mjs, 200 matches, seed 1), after the
+    RushBase flank: A 41%, B 24%, cap 36% (A leads 43 of 71 timeouts).
+    RushBase now wins A 23% / B 32% (was 4% / 27%). Decided fights ~57s.
+    Before the flank: A 46%, B 40%, cap 15%.
   - Shots ignore terrain and can pass through hills.
   - Custom drone units can be created but only the AI side can field them.
   - Side A acts first each tick (small first-mover edge); [40] gives B ties.
@@ -180,5 +187,5 @@ SESSION HISTORY (one line each; detail lives in the code comments)
   C18 moved to GitHub (no code changes) · C19 director camera (#10) ·
   C20 random battle button (#11) · C21 removed deploy emergence (#8) ·
   C22 headless checks in tests/ (#2) · C23 random match seed ·
-  C24 [85] balance harness (#4).
+  C24 [85] balance harness (#4) · C25 RushBase flank + fire on the move (#5).
 ```

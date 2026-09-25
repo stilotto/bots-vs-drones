@@ -630,6 +630,15 @@ const AIR_CRUISE_ALTITUDE = 9; // placeholder — must stay below the shortest w
 // beat before the fight. Symmetric for both sides: pacing, not balance.
 const DEPLOY_TICKS = 30; // 1.5s at 20Hz
 
+// RushBase flank (#5, 2026-09-25): leakers used to walk straight through the
+// middle of the enemy army and die without doing any base damage. Now each
+// one first heads for a waypoint out on the wing, then turns in on the base.
+// Units spawned on the -z half of the line take the -z wing, the rest +z, so
+// the army splits in two. It shoots back on the way (see stepWorld) but never
+// stops or turns aside for enemy units.
+const FLANK_Z = 110;  // wing distance from the centre line (arena edge is 150)
+const FLANK_X = 60;   // how far past midfield, toward the enemy base, the wing turn is
+
 function groundAt(world, x, z) {
   return terrainHeight(world.terrain, x, z);
 }
@@ -686,7 +695,9 @@ const TARGET_SELECTORS = {
 //               front of a base it refuses to shoot.
 //   RushBase  — filters candidates down to ONLY the enemy base, always.
 //               This is DESIGN.md's leaker strategy: a unit on this stance
-//               never engages enemy units at all, even in its own path.
+//               never stops or turns aside for enemy units. 2026-09-25 (#5):
+//               it flanks out wide first and fires on the move at enemies in
+//               range (see FLANK_Z and stepWorld); its target stays the base.
 // Whether a faction's army is "wiped" can't be answered per-unit by
 // re-scanning world.units (O(n) per attacker = O(n^2) per tick, which
 // DESIGN.md's performance budget forbids) so stepWorld computes it once per
@@ -769,8 +780,13 @@ function createWorld(seed, loadoutA, loadoutB, ordersA = DEFAULT_ORDERS, ordersB
     loadout.forEach((spec, i) => {
       const z = (i - (count - 1) / 2) * spacing;
       const x = xSide * 40;
+      // RushBase only: first leg of the flank, see FLANK_Z. Cleared on arrival.
+      const waypoint = orders.stance === 'RushBase'
+        ? { x: -xSide * FLANK_X, z: (z < 0 ? -1 : 1) * FLANK_Z }
+        : null;
       units.push({
         id: `${faction}${i + 1}`,
+        waypoint,
         faction,
         pos: { x, y: surfaceY(x, z, spec.targetCategory), z },
         altitude: altitudeFor(spec.targetCategory),
@@ -998,16 +1014,38 @@ function stepWorld(world) {
 
     if (!target) continue; // no living enemies — idle
 
+    // Flanking leg (RushBase): steer for the wing waypoint, not the target.
+    if (unit.waypoint &&
+        (unit.waypoint.x - unit.pos.x) ** 2 + (unit.waypoint.z - unit.pos.z) ** 2 <= (unit.speed * dt) ** 2) {
+      unit.waypoint = null;
+    }
+    const goal = unit.waypoint || target.pos;
+
     const dist = vDist(unit.pos, target.pos);
-    if (dist > unit.range) {
-      // Horizontal step toward the target, then snap height to the terrain
+    if (unit.waypoint || dist > unit.range) {
+      // Horizontal step toward the goal, then snap height to the terrain
       // (+ cruise altitude for air units). See AIR_CRUISE_ALTITUDE note.
-      const flat = { x: target.pos.x - unit.pos.x, y: 0, z: target.pos.z - unit.pos.z };
+      const flat = { x: goal.x - unit.pos.x, y: 0, z: goal.z - unit.pos.z };
       if (vLenSq(flat) > 1e-12) {
         const dir = vNormalize(flat);
         const nx = unit.pos.x + dir.x * unit.speed * dt;
         const nz = unit.pos.z + dir.z * unit.speed * dt;
         unit.pos = { x: nx, y: groundAt(world, nx, nz) + unit.altitude, z: nz };
+      }
+      // RushBase fires on the move (#5): never stops or turns aside, but
+      // shoots the nearest enemy unit in range while it passes.
+      if (unit.stance === 'RushBase' && unit.cooldown <= 0 && unit.dmg > 0) {
+        let best = null, bestDistSq = unit.range * unit.range;
+        for (const id of world.spatialHash.queryNearby(unit.pos, unit.range)) {
+          const other = world.unitsById.get(id);
+          if (!other || !other.alive || other.isBase || other.faction === unit.faction) continue;
+          const dSq = vDistSq(unit.pos, other.pos);
+          if (dSq <= bestDistSq) { bestDistSq = dSq; best = other; }
+        }
+        if (best) {
+          spawnProjectile(world, unit, best);
+          unit.cooldown = unit.cooldownMax;
+        }
       }
     } else if (unit.cooldown <= 0 && unit.dmg > 0) {
       // D05/C16: firing spawns a projectile instead of applying damage

@@ -163,6 +163,28 @@ const fingerprint = w => JSON.stringify({ tick: w.tick, units: w.units, projecti
   console.log(`       results: A ${tally.A} · B ${tally.B} · hit ${MAX_TICKS / 20}s cap ${tally.cap}`);
 }
 
+// RushBase (#5): flanks out wide and shoots back on the way
+{
+  const spec = (f, id, n) => Array.from({ length: n },
+    () => L.resolveUnitSimSpec(L.buyableCatalog(f).find(t => t.id === id)));
+  const w = L.createWorld(1, [...spec('A', 'bot_grunt', 2), ...spec('A', 'bot_scout', 2)],
+    [...spec('B', 'drone_interceptor', 2), ...spec('B', 'drone_swarmer', 2)],
+    { stance: 'RushBase', targetPriority: 'nearest' }, { stance: 'MixedPush', targetPriority: 'nearest' });
+  let maxZ = 0, shotAtUnits = false;
+  while (w.tick < MAX_TICKS && !L.baseDestruction(w)) {
+    L.stepWorld(w);
+    for (const u of w.units) if (u.faction === 'A' && !u.isBase && u.alive) maxZ = Math.max(maxZ, Math.abs(u.pos.z));
+    // A rusher's only target is the base, so a shot from beyond any weapon's
+    // range of it (max 70) was fired on the move at a unit.
+    const baseB = w.units.find(u => u.isBase && u.faction === 'B');
+    for (const p of w.projectiles) {
+      if (p.faction === 'A' && L.vDist(p.pos, baseB.pos) > 80) shotAtUnits = true;
+    }
+  }
+  check('RushBase flanks wide (|z| > 60) and fires on the move at enemy units', maxZ > 60 && shotAtUnits,
+    `max |z| ${maxZ.toFixed(0)}, shot at units ${shotAtUnits}`);
+}
+
 // Win condition
 {
   const w = L.createWorld(1, [], []);
