@@ -187,5 +187,6 @@ SESSION HISTORY (one line each; detail lives in the code comments)
   C18 moved to GitHub (no code changes) · C19 director camera (#10) ·
   C20 random battle button (#11) · C21 removed deploy emergence (#8) ·
   C22 headless checks in tests/ (#2) · C23 random match seed ·
-  C24 [85] balance harness (#4) · C25 RushBase flank + fire on the move (#5).
+  C24 [85] balance harness (#4) · C25 RushBase flank + fire on the move (#5) ·
+  C26 link back to stilotto.github.io at the top of the page.
 ```
