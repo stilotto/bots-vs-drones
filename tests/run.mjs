@@ -18,7 +18,7 @@ function section(title) { console.log(`\n${title}`); }
 
 const SEEDS = Array.from({ length: 12 }, (_, i) => 1000 + i * 7919);
 const BUDGET = 100;       // mirrors [90]'s placeholder
-const MAX_TICKS = 20 * 90; // mirrors [90]'s placeholder cap
+const MAX_TICKS = 20 * 90; // cap for the RushBase flank check only; matches use the round clock
 
 // ---------------------------------------------------------------- contracts
 section('contracts');
@@ -114,10 +114,9 @@ async function aiPlans(seed, api = L) {
 function runMatch(api, seed, plans, onTick) {
   const w = api.createWorld(seed, plans.la, plans.lb, plans.oa, plans.ob);
   onTick?.(w, true);
-  while (w.tick < MAX_TICKS) {
+  while (!api.matchResult(w)) {
     api.stepWorld(w);
     onTick?.(w, false);
-    if (api.baseDestruction(w)) break;
   }
   return w;
 }
@@ -125,7 +124,7 @@ const fingerprint = w => JSON.stringify({ tick: w.tick, units: w.units, projecti
 {
   const L2 = loadLogic();
   let inv = true, invDetail = '', det = true, cross = true, deploy = true;
-  const tally = { A: 0, B: 0, cap: 0 };
+  const tally = { A: 0, B: 0, draw: 0 };
   let threw = null;
   try { for (const seed of SEEDS) {
     const plans = await aiPlans(seed);
@@ -149,8 +148,7 @@ const fingerprint = w => JSON.stringify({ tick: w.tick, units: w.units, projecti
         }
       }
     });
-    const winner = L.baseDestruction(w);
-    tally[winner ?? 'cap']++;
+    tally[L.matchResult(w)]++;
     if (fingerprint(w) !== fingerprint(runMatch(L, seed, plans))) det = false;
     if (fingerprint(w) !== fingerprint(runMatch(L2, seed, await aiPlans(seed, L2)))) cross = false;
   } } catch (e) { threw = e; }
@@ -160,7 +158,7 @@ const fingerprint = w => JSON.stringify({ tick: w.tick, units: w.units, projecti
   check('deploy window: nothing moves or fires before deployTicks', deploy);
   check('determinism: same seed + loadouts -> identical match', det);
   check('determinism: identical in a fresh context (no hidden module state)', cross);
-  console.log(`       results: A ${tally.A} · B ${tally.B} · hit ${MAX_TICKS / 20}s cap ${tally.cap}`);
+  console.log(`       results: A ${tally.A} · B ${tally.B} · draw ${tally.draw}`);
 }
 
 // RushBase (#5): flanks out wide and shoots back on the way
@@ -228,6 +226,27 @@ const fingerprint = w => JSON.stringify({ tick: w.tick, units: w.units, projecti
   for (let i = 0; i < 20 * 30 && !snapped; i++) { L.stepWorld(w); snapped = u.aggroId === null && u.aggroCooldown > 0; }
   check('aggro: enemy in sight pulls a unit off its goal; leash snaps and it returns',
     pulled && snapped && u.targetId === 'B2', `pulled ${pulled}, snapped ${snapped}`);
+}
+
+// Round clock: final minute turns every unit heedless; timeout is a draw
+{
+  const specA = L.resolveUnitSimSpec(L.buyableCatalog('A').find(t => t.id === 'bot_grunt'));
+  const specB = L.resolveUnitSimSpec(L.buyableCatalog('B').find(t => t.id === 'drone_interceptor'));
+  const w = L.createWorld(1, [specA, specA], [specB], { stance: 'AllUnits', targetPriority: 'nearest' },
+    { stance: 'AllUnits', targetPriority: 'nearest' }, { roundTicks: L.HEEDLESS_TICKS + 40 });
+  for (const u of w.units) if (!u.isBase) Object.assign(u, { dmg: 0 });  // nobody dies
+  const early = w.units.filter(u => !u.isBase && !u.isTurret).every(u => !u.heedless);
+  while (w.tick <= 40) L.stepWorld(w);
+  const units = w.units.filter(u => !u.isBase && !u.isTurret);
+  const heedless = w.heedless && units.every(u => u.heedless && u.aggroId === null &&
+    u.targetId === (u.faction === 'A' ? 'baseB' : 'baseA'));
+  const x0 = units.map(u => u.pos.x);
+  for (let i = 0; i < 100; i++) L.stepWorld(w);
+  const charging = units.every((u, i) => (u.faction === 'A' ? u.pos.x > x0[i] : u.pos.x < x0[i]));
+  while (!L.matchResult(w)) L.stepWorld(w);
+  check('round clock: final minute makes units heedless for the enemy base; timeout is a draw',
+    early && heedless && charging && L.matchResult(w) === 'draw' && w.tick === w.maxTicks,
+    `early ${early}, heedless ${heedless}, charging ${charging}, result ${L.matchResult(w)}`);
 }
 
 // Win condition

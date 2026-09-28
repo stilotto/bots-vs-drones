@@ -157,6 +157,13 @@ DECISIONS (date · decision · why · rejected)
         enemy turrets/units whose range it is inside, sliding past on its own
         side. Kept on top of the flank waypoint (without it drone rushers
         fell to 15%) · rejected lanes/bridges (fixed paths kill the vibe).
+  09-28 Round clock: a round is 5 minutes (ROUND_TICKS on WorldState); no
+        base down by then = draw ([40] matchResult). In the final minute
+        every combat unit automatically turns heedless: drops stance, aggro
+        and avoidance, targets the enemy base and charges straight at it,
+        firing on the move. Clock shown in the camera bar, red in the final
+        minute. Replaces the 90s safety cap; the live game had no cap at all
+        · rejected player-set "final push" order, most-base-HP-wins timeout.
 
 PARKED (not rejected, not now)
   Multiplayer · unit carryover · base upgrades/repair/shields · alternate win
@@ -167,7 +174,7 @@ PARKED (not rejected, not now)
 NOT YET DESIGNED (take one per design discussion)
   Hit/impact event signaling ([30] -> [70] "a hit landed here") · defensive
   measures (what armor does; interaction with accuracy) · economy (budget,
-  income) · base stats (HP, fights back?) · round timer + timeout.
+  income) · base stats (HP, fights back?).
 
 STATUS
   Done: [10] [20] [25] [70]. Partial: [30] (armor not consumed), [40] (base
@@ -179,27 +186,27 @@ STATUS
   (#10) and random battle button (#11) seen working in a browser 09-24.
   Emergence animation removed (#8); checked in headless Chromium, not yet
   by the human.
-  Turrets, aggro/leash, threat avoidance (C27): headless only, not yet
-  seen by the human.
-  Headless checks in the repo (#2): tests/run.mjs 52 checks pass;
+  Turrets, aggro/leash, threat avoidance (C27), round clock (C28):
+  headless only, not yet seen by the human.
+  Headless checks in the repo (#2): tests/run.mjs 53 checks pass;
   tests/screenshot.mjs renders a random battle cleanly.
 
 NEXT UP
-  1. Look at turrets/aggro/avoidance in a browser; decide the round cap
-     (50% of AI fights now hit 90s; 150s cut that to ~15%, see KNOWN ISSUES).
-  2. #5 balance: drones now lag (see KNOWN ISSUES) and 36% of fights time out.
+  1. Look at turrets/aggro/avoidance and the round clock in a browser.
+  2. #5 balance: A leads 59/38 with the 5-minute round (see KNOWN ISSUES).
   3. Real [60] match flow: multiple rounds, persistent base HP, income.
 
 KNOWN ISSUES / FACTS
-  - Balance (node tests/balance.mjs, 200 matches, seed 1), after turrets,
-    aggro and avoidance (09-28): A 23%, B 27%, cap 50%. RushBase wins
-    A 25% / B 58%. Decided fights ~55s. Timeouts are mostly time: turret
-    stats barely moved them; a 150s cap gave ~15%. Before (09-25 flank):
-    A 41%, B 24%, cap 36%.
+  - Balance (node tests/balance.mjs, 200 matches, seed 1), 5-minute round
+    (09-28): A 59%, B 38%, draw 4% (all mutual wipeouts). Decided fights
+    median 84s, max 184s, so AI fights rarely reach the heedless minute.
+    RushBase is the only stance where B wins most. At the old 90s cap:
+    A 23%, B 27%, cap 50%.
   - Shots ignore terrain and can pass through hills.
   - Custom drone units can be created but only the AI side can field them.
   - Side A acts first each tick (small first-mover edge); [40] gives B ties.
-  - Budget 100, base HP 500, base x=±130, MAX_TICKS 90s: all placeholders.
+  - Budget 100, base HP 500, base x=±130: placeholders. Round 5 min, final
+    minute heedless: decided 09-28.
   - SEED is random per page load (logged); ?seed=N replays the AI squad,
     terrain and battle rolls. Random battle's own pick has its own seed.
   - Commander view is hardcoded behind side A.
@@ -218,5 +225,6 @@ SESSION HISTORY (one line each; detail lives in the code comments)
   C22 headless checks in tests/ (#2) · C23 random match seed ·
   C24 [85] balance harness (#4) · C25 RushBase flank + fire on the move (#5) ·
   C26 link back to stilotto.github.io at the top of the page ·
-  C27 seeded turrets, aggro/leash, RushBase threat avoidance.
+  C27 seeded turrets, aggro/leash, RushBase threat avoidance ·
+  C28 5-minute round clock, draw on timeout, heedless final minute.
 ```

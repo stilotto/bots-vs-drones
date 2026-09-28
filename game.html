@@ -70,6 +70,8 @@ CLAUDE.md at the repo root. Per-section contracts live in each section's banner.
   }
   #camera-bar button { padding: 0.3rem 0.8rem; }
   #camera-bar button[aria-pressed="true"] { font-weight: bold; }
+  #round-clock { margin-left: auto; font-family: monospace; font-weight: bold; }
+  #round-clock.final { color: #d33; }
 </style>
 </head>
 <body>
@@ -82,6 +84,7 @@ CLAUDE.md at the repo root. Per-section contracts live in each section's banner.
   <button id="camera-director" type="button" aria-pressed="true">Director</button>
   <button id="camera-reset" type="button" aria-pressed="false">Commander view</button>
   <span id="camera-hint">Drag or scroll to take the camera.</span>
+  <span id="round-clock"></span>
 </div>
 <div id="viewport" style="width: 100vw; height: 70vh; display: block;"></div>
 <pre id="log" style="font-family: monospace; white-space: pre-wrap; padding: 1rem;"></pre>
@@ -632,6 +635,15 @@ const AIR_CRUISE_ALTITUDE = 9; // placeholder — must stay below the shortest w
 // beat before the fight. Symmetric for both sides: pacing, not balance.
 const DEPLOY_TICKS = 30; // 1.5s at 20Hz
 
+// Round clock (2026-09-28): a round lasts ROUND_TICKS; [40]'s matchResult
+// calls it a draw if no base has fallen by then. With HEEDLESS_TICKS left
+// every combat unit turns heedless: it drops its stance, aggro and threat
+// avoidance, targets the enemy base and heads straight for it, firing on the
+// move at whatever is in range (RushBase's fire-on-move). Automatic, same
+// for both sides; the round length is on WorldState so [80]/[90] can show it.
+const ROUND_TICKS = 20 * 300;    // 5 minutes
+const HEEDLESS_TICKS = 20 * 60;  // final minute
+
 // RushBase flank (#5, 2026-09-25): leakers used to walk straight through the
 // middle of the enemy army and die without doing any base damage. Now each
 // one first heads for a waypoint out on the wing, then turns in on the base.
@@ -768,7 +780,7 @@ function findTargetByPriority(world, unit, hasNonBaseAlive) {
       const other = world.unitsById.get(id);
       if (other && other.alive && other.faction !== unit.faction) candidates.push(other);
     }
-    candidates = filterByStance(candidates, unit.stance, enemyHasNonBaseAlive);
+    candidates = filterByStance(candidates, unit.heedless ? 'RushBase' : unit.stance, enemyHasNonBaseAlive);
     if (candidates.length > 0) return selector(unit, candidates);
     radius *= 2;
   }
@@ -792,7 +804,8 @@ function resolveOrders(orders) {
   return { stance, targetPriority };
 }
 
-function createWorld(seed, loadoutA, loadoutB, ordersA = DEFAULT_ORDERS, ordersB = DEFAULT_ORDERS) {
+// opts.roundTicks overrides ROUND_TICKS (the balance harness and tests use it).
+function createWorld(seed, loadoutA, loadoutB, ordersA = DEFAULT_ORDERS, ordersB = DEFAULT_ORDERS, opts = {}) {
   const rng = makeRNG(seed);
   const units = [];
   const spacing = 4;
@@ -967,6 +980,8 @@ function createWorld(seed, loadoutA, loadoutB, ordersA = DEFAULT_ORDERS, ordersB
     spatialHash: new SpatialHash(20),
     terrain,                // 2026-09-23 — read by [70] via [10]'s terrainHeight
     deployTicks: DEPLOY_TICKS,
+    maxTicks: opts.roundTicks ?? ROUND_TICKS,  // round length, see ROUND_TICKS
+    heedless: false,                           // set once the final minute starts
     projectiles: [],        // D05/C16 — in-flight projectile entities, see below
     nextProjectileId: 1,
   };
@@ -1127,7 +1142,7 @@ function avoidanceDir(world, unit, goal) {
 // Aggro + leash (see SIGHT_RADIUS). Returns the enemy this unit is currently
 // scuffling with, or null to follow its goal target.
 function updateAggro(world, unit) {
-  if (unit.isBase || unit.stance === 'RushBase') return null;
+  if (unit.isBase || unit.heedless || unit.stance === 'RushBase') return null;
   if (unit.aggroCooldown > 0) unit.aggroCooldown--;
   if (unit.aggroId) {
     const a = world.unitsById.get(unit.aggroId);
@@ -1161,6 +1176,22 @@ function stepWorld(world) {
   const hasNonBaseAlive = { A: false, B: false };
   for (const unit of world.units) {
     if (unit.alive && !unit.isBase) hasNonBaseAlive[unit.faction] = true;
+  }
+
+  // Final minute (see HEEDLESS_TICKS): everyone drops what they're doing
+  // and goes for the enemy base. Happens once; flags stay set.
+  if (!world.heedless && world.tick >= world.maxTicks - HEEDLESS_TICKS) {
+    world.heedless = true;
+    const baseOf = { A: 'baseA', B: 'baseB' };
+    for (const unit of world.units) {
+      if (!unit.alive || unit.isBase || unit.isTurret) continue;
+      unit.heedless = true;
+      unit.waypoint = null;
+      unit.aggroId = null;
+      unit.aggroAnchor = null;
+      const base = world.unitsById.get(baseOf[unit.faction === 'A' ? 'B' : 'A']);
+      unit.targetId = base && base.alive ? base.id : null;
+    }
   }
 
   // Deploy window: nobody moves, targets, or fires yet.
@@ -1199,14 +1230,15 @@ function stepWorld(world) {
       const flat = { x: goal.x - unit.pos.x, y: 0, z: goal.z - unit.pos.z };
       if (vLenSq(flat) > 1e-12) {
         // RushBase steers around threats (see AVOID_MARGIN); others go straight.
-        const dir = unit.stance === 'RushBase' ? avoidanceDir(world, unit, goal) : vNormalize(flat);
+        const dir = unit.stance === 'RushBase' && !unit.heedless
+          ? avoidanceDir(world, unit, goal) : vNormalize(flat);
         const nx = unit.pos.x + dir.x * unit.speed * dt;
         const nz = unit.pos.z + dir.z * unit.speed * dt;
         unit.pos = { x: nx, y: groundAt(world, nx, nz) + unit.altitude, z: nz };
       }
       // RushBase fires on the move (#5): never stops or turns aside, but
       // shoots the nearest enemy unit in range while it passes.
-      if (unit.stance === 'RushBase' && unit.cooldown <= 0 && unit.dmg > 0) {
+      if ((unit.stance === 'RushBase' || unit.heedless) && unit.cooldown <= 0 && unit.dmg > 0) {
         const best = nearestEnemyWithin(world, unit, unit.range);
         if (best) {
           spawnProjectile(world, unit, best);
@@ -1245,7 +1277,7 @@ function stepWorld(world) {
 
 // ══════════════════════════════════════════════════════════
 // [40] WIN CONDITIONS — pure checks against WorldState
-// EXPORTS: baseDestruction
+// EXPORTS: baseDestruction, matchResult
 // MAY USE:  [10] utils, [20] content tables, read-only WorldState
 // MUST NOT: mutate world state; MUST NOT be called from inside [30]
 // ══════════════════════════════════════════════════════════
@@ -1280,6 +1312,12 @@ function baseDestruction(world) {
   if (aDown) return 'B';
   if (bDown) return 'A';
   return null;
+}
+
+// Round result (2026-09-28): base destruction, else 'draw' once the round
+// clock ([30]'s world.maxTicks) runs out, else null (still playing).
+function matchResult(world) {
+  return baseDestruction(world) ?? (world.tick >= world.maxTicks ? 'draw' : null);
 }
 
 
@@ -2459,9 +2497,10 @@ function initRandomBattleUI(container, budget, faction, targetPriorities, onPick
 // is at is what gets measured. Everything is seeded: one base seed gives the
 // same report every time. Run from Node: node tests/balance.mjs [matches].
 //
-// BUDGET and MAX_TICKS mirror [90]'s placeholders ([60] will own them once it
-// exists); override per run through runBalance's options.
-const BALANCE_DEFAULTS = { matches: 200, seed: 1, budget: 100, maxTicks: 20 * 90 };
+// BUDGET mirrors [90]'s placeholder ([60] will own it once it exists);
+// maxTicks is [30]'s round length (a timeout is a draw); override per run
+// through runBalance's options.
+const BALANCE_DEFAULTS = { matches: 200, seed: 1, budget: 100, maxTicks: ROUND_TICKS };
 
 // One match, start to finish. Commander seeds follow [90]'s pattern
 // (seed+1 for A, seed+2 for B). Returns a plain result, not the world.
@@ -2469,9 +2508,9 @@ async function runHeadlessMatch(seed, { budget = BALANCE_DEFAULTS.budget, maxTic
   const a = new AICommander(seed + 1), b = new AICommander(seed + 2);
   const [la, lb] = await Promise.all([a.chooseLoadout(budget, 'A', {}), b.chooseLoadout(budget, 'B', {})]);
   const [oa, ob] = await Promise.all([a.chooseOrders([], []), b.chooseOrders([], [])]);
-  const world = createWorld(seed, la.units, lb.units, oa, ob);
+  const world = createWorld(seed, la.units, lb.units, oa, ob, { roundTicks: maxTicks });
   let winner = null;
-  while (world.tick < maxTicks) {
+  while (world.tick < world.maxTicks) {
     stepWorld(world);
     winner = baseDestruction(world);
     if (winner) break;
@@ -2675,25 +2714,19 @@ log(`Commander B orders: stance=${ordersB.stance} targetPriority=${ordersB.targe
 // which is the intended DESIGN.md behavior (annihilation isn't a v1 win
 // condition; base destruction is the only one).
 
-const MAX_TICKS = 20 * 90; // bumped from 60s (C01) — bases sit further out
-                            // (BASE_X=130) than the old wipeout-only checks
-                            // ever needed to account for; still a placeholder
-                            // safety cap, not a designed round-timer (DESIGN.md §5).
-
+// 2026-09-28: runs until [40]'s matchResult (base down, or a draw when
+// [30]'s 5-minute round clock runs out).
 function runToCompletion(seed) {
   const world = createWorld(seed, loadoutA, loadoutB, ordersA, ordersB);
-  while (world.tick < MAX_TICKS) {
-    stepWorld(world);
-    if (baseDestruction(world)) break;
-  }
+  do stepWorld(world); while (!matchResult(world));
   return world;
 }
 
 const headlessWorld = runToCompletion(SEED);
-const headlessWinner = baseDestruction(headlessWorld);
+const headlessWinner = matchResult(headlessWorld);
 
 log(`Match ended at tick ${headlessWorld.tick} (t=${headlessWorld.time.toFixed(2)}s) ` +
-    `— winner: ${headlessWinner ?? 'none (hit MAX_TICKS safety cap)'}`);
+    `— ${headlessWinner === 'draw' ? 'draw (round clock ran out)' : `winner: ${headlessWinner}`}`);
 for (const u of headlessWorld.units) {
   log(`  ${u.id} [${u.faction}] hp=${Math.max(0, u.hp).toFixed(1)} alive=${u.alive}`);
 }
@@ -2748,6 +2781,17 @@ let lastTime = performance.now();
 // used for loadouts and orders before [50]/[80] existed.
 let liveWinner = null;
 
+// Round clock (2026-09-28): time left, and a warning once units go heedless.
+const roundClockEl = document.getElementById('round-clock');
+function updateRoundClock() {
+  const left = Math.max(0, Math.ceil((liveWorld.maxTicks - liveWorld.tick) * TICK_DT));
+  const mmss = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
+  roundClockEl.textContent = liveWinner === 'draw' ? 'Draw — time ran out'
+    : liveWinner ? `Commander ${liveWinner} wins`
+    : liveWorld.heedless ? `${mmss} — final minute: all units charge!` : mmss;
+  roundClockEl.classList.toggle('final', liveWorld.heedless || liveWinner === 'draw');
+}
+
 function frame(now) {
   requestAnimationFrame(frame);
 
@@ -2761,14 +2805,15 @@ function frame(now) {
     stepWorld(liveWorld);
     accumulator -= TICK_DT;
 
-    const winner = baseDestruction(liveWorld);
+    const winner = matchResult(liveWorld);
     if (winner) {
       liveWinner = winner;
       log(`Live match ended at tick ${liveWorld.tick} (t=${liveWorld.time.toFixed(2)}s) ` +
-          `— Commander ${winner} wins!`);
+          `— ${winner === 'draw' ? 'draw, time ran out' : `Commander ${winner} wins!`}`);
       break;
     }
   }
+  updateRoundClock();
 
   // Once decided, freeze on the final tick's real positions (alpha=1)
   // rather than continuing to interpolate against a stale accumulator.
