@@ -641,6 +641,36 @@ const DEPLOY_TICKS = 30; // 1.5s at 20Hz
 const FLANK_Z = 110;  // wing distance from the centre line (arena edge is 150)
 const FLANK_X = 60;   // how far past midfield, toward the enemy base, the wing turn is
 
+// Turrets (2026-09-28, MOBA towers / Clash Royale princess towers): each side
+// owns TURRETS_PER_SIDE stationary guns between midfield and its base. Their
+// spots come from the match seed, so every map has its own shape, and B's are
+// A's mirrored through the centre (point symmetry) so neither side gets the
+// better layout. A turret is an ordinary entity like a base (isTurret marker,
+// speed 0) and a legal target for everyone; it only ever shoots enemy units in
+// its own range, re-picking the nearest each time its target dies or leaves.
+// All numbers are placeholders, same as BASE_HP.
+const TURRETS_PER_SIDE = 2;
+const TURRET_HP = 100;
+const TURRET_RANGE = 40;
+const TURRET_DMG = 4;
+const TURRET_COOLDOWN = 0.8;      // seconds between shots
+const TURRET_ACCURACY = 0.7;      // weapon hits 'both', so one accuracy for all
+const TURRET_PROJECTILE_SPEED = 90;
+const TURRET_X_MIN = 55, TURRET_X_MAX = 95; // distance from the centre line, own half
+const TURRET_Z_MAX = 100;         // lanes are never fixed: z anywhere in ±this
+
+// Aggro + leash (2026-09-28, MOBA creeps): a MixedPush/AllUnits unit keeps
+// its priority-picked goal target, but any enemy unit or turret that comes
+// within sight pulls it off to fight. It gives up the chase once it has
+// strayed LEASH from where the scuffle started, then ignores aggro for
+// AGGRO_COOLDOWN ticks while it heads back to its goal. RushBase never
+// aggros (it already fires on the move). Sight scans run every AGGRO_RECHECK
+// ticks, staggered per unit, to keep the per-tick cost flat.
+const SIGHT_RADIUS = 50;   // raised to the unit's weapon range if that is longer
+const LEASH = 60;
+const AGGRO_RECHECK = 10;  // ticks
+const AGGRO_COOLDOWN = 40; // ticks (2s)
+
 function groundAt(world, x, z) {
   return terrainHeight(world.terrain, x, z);
 }
@@ -757,6 +787,19 @@ function createWorld(seed, loadoutA, loadoutB, ordersA = DEFAULT_ORDERS, ordersB
   const units = [];
   const spacing = 4;
 
+  // Turret spots (see TURRETS_PER_SIDE). Own RNG stream derived from the seed,
+  // like terrain, so layout never shifts the battle's hit/miss rolls. Each of
+  // A's turrets gets its own z band (no two stacked together); B mirrors A.
+  const layoutRng = makeRNG((seed ^ 0x7a3c11) | 0);
+  const turretSpots = [];
+  const band = (2 * TURRET_Z_MAX) / TURRETS_PER_SIDE;
+  for (let i = 0; i < TURRETS_PER_SIDE; i++) {
+    const mid = -TURRET_Z_MAX + band * (i + 0.5);
+    const x = -layoutRng.range(TURRET_X_MIN, TURRET_X_MAX);
+    const z = mid + layoutRng.range(-0.35, 0.35) * band;
+    turretSpots.push({ faction: 'A', x, z }, { faction: 'B', x: -x, z: -z });
+  }
+
   // Plain data, stored on WorldState so [70] can build the same ground.
   // Terrain seed is derived from the match seed, so a replay reproduces it.
   const terrain = {
@@ -767,6 +810,7 @@ function createWorld(seed, loadoutA, loadoutB, ordersA = DEFAULT_ORDERS, ordersB
     flatZones: [
       { x: -BASE_X, z: 0, radius: TERRAIN.baseFlatRadius, blend: TERRAIN.baseFlatBlend },
       { x:  BASE_X, z: 0, radius: TERRAIN.baseFlatRadius, blend: TERRAIN.baseFlatBlend },
+      ...turretSpots.map(t => ({ x: t.x, z: t.z, radius: 4, blend: 8 })),
     ],
   };
   const surfaceY = (x, z, cat) => terrainHeight(terrain, x, z) + altitudeFor(cat);
@@ -801,6 +845,12 @@ function createWorld(seed, loadoutA, loadoutB, ordersA = DEFAULT_ORDERS, ordersB
         cooldownMax: spec.cooldown,
         alive: true,
         targetId: null,
+        // Aggro + leash (see SIGHT_RADIUS): temporary target, where the chase
+        // began, ticks left before aggro is allowed again, scan stagger.
+        aggroId: null,
+        aggroAnchor: null,
+        aggroCooldown: 0,
+        aggroPhase: i % AGGRO_RECHECK,
         stance: orders.stance,               // consumed by findTargetByPriority — see note above
         targetPriority: orders.targetPriority,
         // D05/C16: carried straight through from [50]'s resolved spec — see
@@ -862,6 +912,36 @@ function createWorld(seed, loadoutA, loadoutB, ordersA = DEFAULT_ORDERS, ordersB
 
   units.push(makeBase('A', -1));
   units.push(makeBase('B', 1));
+
+  // Turrets (see TURRETS_PER_SIDE): after bases, same entity shape.
+  const turretCount = { A: 0, B: 0 };
+  for (const t of turretSpots) {
+    units.push({
+      id: `turret${t.faction}${++turretCount[t.faction]}`,
+      faction: t.faction,
+      pos: { x: t.x, y: surfaceY(t.x, t.z, 'ground'), z: t.z },
+      altitude: 0,
+      hp: TURRET_HP,
+      maxHp: TURRET_HP,
+      speed: 0,
+      range: TURRET_RANGE,
+      dmg: TURRET_DMG,
+      cooldown: 0,
+      cooldownMax: TURRET_COOLDOWN,
+      alive: true,
+      targetId: null,
+      stance: 'AllUnits',
+      targetPriority: 'nearest',
+      isTurret: true,
+      targetCategory: 'ground',
+      weaponTargetType: 'both',
+      accuracy: TURRET_ACCURACY,
+      mismatchAccuracy: TURRET_ACCURACY,
+      projectileSpeed: TURRET_PROJECTILE_SPEED,
+      splashRadius: 0,
+      splashFalloff: 0,
+    });
+  }
 
   const unitsById = new Map(units.map(u => [u.id, u]));
 
@@ -983,6 +1063,53 @@ function advanceProjectiles(world, dt) {
   world.projectiles = stillFlying;
 }
 
+// Nearest living enemy unit or turret (never a base) within `radius`.
+function nearestEnemyWithin(world, unit, radius) {
+  let best = null, bestDistSq = radius * radius;
+  for (const id of world.spatialHash.queryNearby(unit.pos, radius)) {
+    const other = world.unitsById.get(id);
+    if (!other || !other.alive || other.isBase || other.faction === unit.faction) continue;
+    const dSq = vDistSq(unit.pos, other.pos);
+    if (dSq <= bestDistSq) { bestDistSq = dSq; best = other; }
+  }
+  return best;
+}
+
+// Turret tick (see TURRETS_PER_SIDE): keep the current target while it is
+// alive and in range, else take the nearest enemy in range; fire when ready.
+function stepTurret(world, unit) {
+  let target = unit.targetId ? world.unitsById.get(unit.targetId) : null;
+  if (!target || !target.alive || vDistSq(unit.pos, target.pos) > unit.range * unit.range) {
+    target = nearestEnemyWithin(world, unit, unit.range);
+    unit.targetId = target ? target.id : null;
+  }
+  if (target && unit.cooldown <= 0) {
+    spawnProjectile(world, unit, target);
+    unit.cooldown = unit.cooldownMax;
+  }
+}
+
+// Aggro + leash (see SIGHT_RADIUS). Returns the enemy this unit is currently
+// scuffling with, or null to follow its goal target.
+function updateAggro(world, unit) {
+  if (unit.isBase || unit.stance === 'RushBase') return null;
+  if (unit.aggroCooldown > 0) unit.aggroCooldown--;
+  if (unit.aggroId) {
+    const a = world.unitsById.get(unit.aggroId);
+    const dx = unit.pos.x - unit.aggroAnchor.x, dz = unit.pos.z - unit.aggroAnchor.z;
+    if (a && a.alive && dx * dx + dz * dz <= LEASH * LEASH) return a;
+    if (a && a.alive) unit.aggroCooldown = AGGRO_COOLDOWN; // leash snapped, not won
+    unit.aggroId = null;
+    unit.aggroAnchor = null;
+  }
+  if (unit.aggroCooldown > 0 || (world.tick + unit.aggroPhase) % AGGRO_RECHECK !== 0) return null;
+  const a = nearestEnemyWithin(world, unit, Math.max(SIGHT_RADIUS, unit.range));
+  if (!a || a.id === unit.targetId) return null;
+  unit.aggroId = a.id;
+  unit.aggroAnchor = { x: unit.pos.x, z: unit.pos.z };
+  return a;
+}
+
 function stepWorld(world) {
   const dt = world.dt;
 
@@ -995,6 +1122,7 @@ function stepWorld(world) {
   // AllUnits stance needs to know, per faction, whether any non-base enemy
   // unit is still alive. Computed once here (O(n)) rather than per-attacker
   // inside findTargetByPriority (would be O(n^2)) — see filterByStance note.
+  // Turrets count (2026-09-28): AllUnits clears them before the base.
   const hasNonBaseAlive = { A: false, B: false };
   for (const unit of world.units) {
     if (unit.alive && !unit.isBase) hasNonBaseAlive[unit.faction] = true;
@@ -1008,6 +1136,9 @@ function stepWorld(world) {
 
     if (unit.cooldown > 0) unit.cooldown = Math.max(0, unit.cooldown - dt);
 
+    if (unit.isTurret) { stepTurret(world, unit); continue; }
+
+    // targetId is the unit's goal (priority-picked, sticky until it dies).
     let target = unit.targetId ? world.unitsById.get(unit.targetId) : null;
     if (!target || !target.alive) {
       target = findTargetByPriority(world, unit, hasNonBaseAlive);
@@ -1015,6 +1146,9 @@ function stepWorld(world) {
     }
 
     if (!target) continue; // no living enemies — idle
+
+    // An enemy in sight overrides the goal until it dies or the leash snaps.
+    target = updateAggro(world, unit) || target;
 
     // Flanking leg (RushBase): steer for the wing waypoint, not the target.
     if (unit.waypoint &&
@@ -1037,13 +1171,7 @@ function stepWorld(world) {
       // RushBase fires on the move (#5): never stops or turns aside, but
       // shoots the nearest enemy unit in range while it passes.
       if (unit.stance === 'RushBase' && unit.cooldown <= 0 && unit.dmg > 0) {
-        let best = null, bestDistSq = unit.range * unit.range;
-        for (const id of world.spatialHash.queryNearby(unit.pos, unit.range)) {
-          const other = world.unitsById.get(id);
-          if (!other || !other.alive || other.isBase || other.faction === unit.faction) continue;
-          const dSq = vDistSq(unit.pos, other.pos);
-          if (dSq <= bestDistSq) { bestDistSq = dSq; best = other; }
-        }
+        const best = nearestEnemyWithin(world, unit, unit.range);
         if (best) {
           spawnProjectile(world, unit, best);
           unit.cooldown = unit.cooldownMax;
@@ -1355,6 +1483,7 @@ const SKY_COLOR = 0x1b2230;
 let scene, camera, threeRenderer, controls, terrainParams = null;
 const unitPools = {};        // key `${faction}:${category}` -> InstancedMesh
 const basePools = {};        // faction -> InstancedMesh
+const turretPools = {};      // faction -> InstancedMesh (2026-09-28)
 const projectilePools = {};  // faction -> InstancedMesh
 const headingById = new Map();
 const dummy = new THREE.Object3D();
@@ -1482,6 +1611,14 @@ function initRenderer(container, world) {
     );
     basePools[faction] = baseMesh;
     scene.add(baseMesh);
+
+    const turretMesh = makePool(
+      new THREE.CylinderGeometry(2, 2.8, 6, 8),
+      new THREE.MeshStandardMaterial({ color: BASE_COLORS[faction], roughness: 0.7 }),
+      8
+    );
+    turretPools[faction] = turretMesh;
+    scene.add(turretMesh);
 
     const tracer = makePool(
       new THREE.BoxGeometry(0.22, 0.22, 1.8),
@@ -1674,6 +1811,8 @@ function renderFrame(worldPrev, worldCurr, alpha) {
   for (const k of Object.keys(unitPools)) counts[k] = 0;
   const baseCounts = {};
   for (const k of Object.keys(basePools)) baseCounts[k] = 0;
+  const turretCounts = {};
+  for (const k of Object.keys(turretPools)) turretCounts[k] = 0;
 
   for (const unit of worldCurr.units) {
     if (!unit.alive) continue;
@@ -1701,6 +1840,20 @@ function renderFrame(worldPrev, worldCurr, alpha) {
       dummy.updateMatrix();
       mesh.setMatrixAt(idx, dummy.matrix);
       baseCounts[unit.faction] = idx + 1;
+      continue;
+    }
+
+    if (unit.isTurret) {
+      const mesh = turretPools[unit.faction];
+      if (!mesh) continue;
+      const idx = turretCounts[unit.faction];
+      const sy = 0.3 + 0.7 * Math.max(0, unit.hp) / (unit.maxHp || 1);
+      dummy.position.set(pos.x, pos.y + 3 * sy, pos.z);
+      dummy.rotation.set(0, 0, 0);
+      dummy.scale.set(1, sy, 1);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(idx, dummy.matrix);
+      turretCounts[unit.faction] = idx + 1;
       continue;
     }
 
@@ -1738,6 +1891,10 @@ function renderFrame(worldPrev, worldCurr, alpha) {
   }
   for (const [k, mesh] of Object.entries(basePools)) {
     mesh.count = baseCounts[k];
+    mesh.instanceMatrix.needsUpdate = true;
+  }
+  for (const [k, mesh] of Object.entries(turretPools)) {
+    mesh.count = turretCounts[k];
     mesh.instanceMatrix.needsUpdate = true;
   }
 
@@ -2285,7 +2442,7 @@ async function runHeadlessMatch(seed, { budget = BALANCE_DEFAULTS.budget, maxTic
   }
   const side = f => {
     const base = world.units.find(u => u.isBase && u.faction === f);
-    const units = world.units.filter(u => !u.isBase && u.faction === f);
+    const units = world.units.filter(u => !u.isBase && !u.isTurret && u.faction === f);
     return {
       baseHp: Math.max(0, base.hp),
       fielded: units.length,

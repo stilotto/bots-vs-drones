@@ -185,6 +185,51 @@ const fingerprint = w => JSON.stringify({ tick: w.tick, units: w.units, projecti
     `max |z| ${maxZ.toFixed(0)}, shot at units ${shotAtUnits}`);
 }
 
+// Turrets: seeded layout, mirrored for fairness, own half, shoot what's in range
+{
+  const turrets = w => w.units.filter(u => u.isTurret);
+  const w1 = L.createWorld(1, [], []), w2 = L.createWorld(2, [], []);
+  const t1 = turrets(w1);
+  const a = t1.filter(t => t.faction === 'A'), b = t1.filter(t => t.faction === 'B');
+  const mirrored = a.every((t, i) => Math.abs(t.pos.x + b[i].pos.x) < 1e-9 && Math.abs(t.pos.z + b[i].pos.z) < 1e-9);
+  const ownHalf = a.every(t => t.pos.x < 0) && b.every(t => t.pos.x > 0);
+  const differs = JSON.stringify(t1.map(t => t.pos)) !== JSON.stringify(turrets(w2).map(t => t.pos));
+  check('turrets: per side count, B mirrors A, own half, layout varies by seed',
+    a.length === L.TURRETS_PER_SIDE && b.length === a.length && mirrored && ownHalf && differs);
+
+  const spec = L.resolveUnitSimSpec(L.buyableCatalog('B').find(t => t.id === 'drone_bomber'));
+  const w = L.createWorld(1, [], [spec]);
+  const tur = turrets(w).find(t => t.faction === 'A');
+  const dummy = w.units.find(u => u.id === 'B1');
+  Object.assign(dummy, { speed: 0, dmg: 0, hp: 1e6, maxHp: 1e6 });
+  dummy.pos = { x: tur.pos.x + 20, y: tur.pos.y + 9, z: tur.pos.z };
+  for (let i = 0; i < w.deployTicks + 20; i++) L.stepWorld(w);
+  check('turret targets and fires at an enemy in range', tur.targetId === 'B1' && dummy.hp < 1e6);
+}
+
+// Aggro + leash: a passing enemy pulls a unit off its goal, the leash pulls it back
+{
+  const specA = L.resolveUnitSimSpec(L.buyableCatalog('A').find(t => t.id === 'bot_grunt'));
+  const specB = L.resolveUnitSimSpec(L.buyableCatalog('B').find(t => t.id === 'drone_interceptor'));
+  const w = L.createWorld(1, [specA], [specB, specB]);
+  const u = w.units.find(x => x.id === 'A1');
+  const lure = w.units.find(x => x.id === 'B1');
+  const other = w.units.find(x => x.id === 'B2');
+  for (const t of w.units.filter(x => x.isTurret)) t.alive = false;
+  Object.assign(lure, { speed: 0, dmg: 0, hp: 1e6, maxHp: 1e6 });
+  Object.assign(other, { speed: 0, dmg: 0, hp: 1e6, maxHp: 1e6 });
+  other.pos = { ...other.pos, x: 120, z: 0 };  // far goal
+  lure.pos = { ...lure.pos, x: u.pos.x + 5, z: u.pos.z + 30 };
+  u.targetId = 'B2';
+  for (let i = 0; i < w.deployTicks + L.AGGRO_RECHECK + 1; i++) L.stepWorld(w);
+  const pulled = u.aggroId === 'B1';
+  lure.pos = { ...lure.pos, z: 140 };  // runs off: chase until the leash snaps
+  let snapped = false;
+  for (let i = 0; i < 20 * 30 && !snapped; i++) { L.stepWorld(w); snapped = u.aggroId === null && u.aggroCooldown > 0; }
+  check('aggro: enemy in sight pulls a unit off its goal; leash snaps and it returns',
+    pulled && snapped && u.targetId === 'B2', `pulled ${pulled}, snapped ${snapped}`);
+}
+
 // Win condition
 {
   const w = L.createWorld(1, [], []);
