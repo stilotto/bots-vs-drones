@@ -164,6 +164,11 @@ DECISIONS (date · decision · why · rejected)
         firing on the move. Clock shown in the camera bar, red in the final
         minute. Replaces the 90s safety cap; the live game had no cap at all
         · rejected player-set "final push" order, most-base-HP-wins timeout.
+  09-28 Phones: the 3D view is at most square (height min(70vh, 100vw)) and
+        below aspect 1.3 the camera widens its vertical FOV (55 up to 80) so
+        the horizontal view doesn't shrink to a zoomed-in slice. Portrait
+        phones had this since the start; turret/base close-ups made it show
+        · rejected forcing landscape, separate mobile camera shots.
 
 PARKED (not rejected, not now)
   Multiplayer · unit carryover · base upgrades/repair/shields · alternate win
@@ -188,7 +193,7 @@ STATUS
   by the human.
   Turrets, aggro/leash, threat avoidance (C27), round clock (C28):
   headless only, not yet seen by the human.
-  Headless checks in the repo (#2): tests/run.mjs 53 checks pass;
+  Headless checks in the repo (#2): tests/run.mjs 54 checks pass;
   tests/screenshot.mjs renders a random battle cleanly.
 
 NEXT UP
@@ -226,5 +231,6 @@ SESSION HISTORY (one line each; detail lives in the code comments)
   C24 [85] balance harness (#4) · C25 RushBase flank + fire on the move (#5) ·
   C26 link back to stilotto.github.io at the top of the page ·
   C27 seeded turrets, aggro/leash, RushBase threat avoidance ·
-  C28 5-minute round clock, draw on timeout, heedless final minute.
+  C28 5-minute round clock, draw on timeout, heedless final minute ·
+  C29 phone camera: square view cap + wider FOV on narrow screens.
 ```

@@ -343,7 +343,7 @@ section('render (mocked three)');
   const w = R.createWorld(SEEDS[0], plans.la, plans.lb, plans.oa, plans.ob);
   const modes = [];
   R.onCameraModeChange(m => modes.push(m));
-  let threw = null, mutated = false;
+  let threw = null, mutated = false, fovOk = false;
   try {
     R.initRenderer(el(), w);
     const snap = () => ({
@@ -360,10 +360,16 @@ section('render (mocked three)');
       if (fingerprint(w) !== before) mutated = true;
     }
     R.resetCommanderView();
+    const cam = R.initRenderer(el(), w).camera;
+    R.fitCameraToViewport({ clientWidth: 1280, clientHeight: 630 });
+    const wideFov = cam.fov;
+    R.fitCameraToViewport({ clientWidth: 393, clientHeight: 393 });
+    fovOk = wideFov === R.CAMERA_FOV && cam.fov > wideFov && cam.fov <= R.CAMERA_MAX_FOV;
   } catch (e) { threw = e; }
   check('initRenderer + 1200 renderFrames across director/manual run without throwing',
     !threw, threw && (threw.stack || String(threw)).split('\n').slice(0, 3).join('\n       '));
   check('renderer never mutates the world', !mutated);
+  check('camera widens its FOV on narrow (phone) viewports, keeps it on wide ones', fovOk);
   check('renderer never passes NaN/Infinity to three', calls.nan.length === 0, calls.nan.slice(0, 3).join('; '));
   check('camera: drag hands over to manual, director can be re-selected',
     modes.includes('manual') && modes.lastIndexOf('director') > modes.indexOf('manual'), modes.join(' -> '));
