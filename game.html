@@ -671,6 +671,16 @@ const LEASH = 60;
 const AGGRO_RECHECK = 10;  // ticks
 const AGGRO_COOLDOWN = 40; // ticks (2s)
 
+// Threat avoidance (2026-09-28): a RushBase unit bends its path away from
+// enemy turrets and units whose weapon range (+ AVOID_MARGIN) it is inside,
+// sliding around them on the side it is already on rather than backing off.
+// No paths, no map: each tick it just sums its pull toward the goal with a
+// push from every threat nearby, so the route comes out of the fight itself.
+const AVOID_MARGIN = 12;       // stay this far outside a threat's weapon range
+const AVOID_QUERY = 70;        // look no further than this for threats
+const AVOID_TURRET_WEIGHT = 2; // turrets can't be outrun, so give them room
+const AVOID_UNIT_WEIGHT = 0.6;
+
 function groundAt(world, x, z) {
   return terrainHeight(world.terrain, x, z);
 }
@@ -1089,6 +1099,31 @@ function stepTurret(world, unit) {
   }
 }
 
+// Threat avoidance (see AVOID_MARGIN): unit direction (x/z) toward `goal`,
+// bent away from nearby enemy turrets and units.
+function avoidanceDir(world, unit, goal) {
+  let gx = goal.x - unit.pos.x, gz = goal.z - unit.pos.z;
+  const gl = Math.hypot(gx, gz);
+  if (gl < 1e-9) return null;
+  gx /= gl; gz /= gl;
+  let sx = gx, sz = gz;
+  for (const id of world.spatialHash.queryNearby(unit.pos, AVOID_QUERY)) {
+    const o = world.unitsById.get(id);
+    if (!o || !o.alive || o.isBase || o.faction === unit.faction || o.dmg <= 0) continue;
+    const r = Math.min(o.range + AVOID_MARGIN, AVOID_QUERY);
+    const dx = unit.pos.x - o.pos.x, dz = unit.pos.z - o.pos.z;
+    const d = Math.hypot(dx, dz);
+    if (d >= r || d < 1e-9) continue;
+    const w = (1 - d / r) * (o.isTurret ? AVOID_TURRET_WEIGHT : AVOID_UNIT_WEIGHT);
+    // Slide past on whichever side of the goal line the unit already is.
+    const side = gx * dz - gz * dx >= 0 ? 1 : -1;
+    sx += w * (dx / d - gz * side);
+    sz += w * (dz / d + gx * side);
+  }
+  const sl = Math.hypot(sx, sz);
+  return sl < 1e-9 ? { x: gx, z: gz } : { x: sx / sl, z: sz / sl };
+}
+
 // Aggro + leash (see SIGHT_RADIUS). Returns the enemy this unit is currently
 // scuffling with, or null to follow its goal target.
 function updateAggro(world, unit) {
@@ -1163,7 +1198,8 @@ function stepWorld(world) {
       // (+ cruise altitude for air units). See AIR_CRUISE_ALTITUDE note.
       const flat = { x: goal.x - unit.pos.x, y: 0, z: goal.z - unit.pos.z };
       if (vLenSq(flat) > 1e-12) {
-        const dir = vNormalize(flat);
+        // RushBase steers around threats (see AVOID_MARGIN); others go straight.
+        const dir = unit.stance === 'RushBase' ? avoidanceDir(world, unit, goal) : vNormalize(flat);
         const nx = unit.pos.x + dir.x * unit.speed * dt;
         const nz = unit.pos.z + dir.z * unit.speed * dt;
         unit.pos = { x: nx, y: groundAt(world, nx, nz) + unit.altitude, z: nz };

@@ -146,6 +146,17 @@ DECISIONS (date · decision · why · rejected)
         units". Flank alone left rushing bots at 4% (drones chase them down)
         · rejected return-fire-only (rushers died in the middle), dropping
         RushBase from the AI's picks (hides it).
+  09-28 Units stop beelining, MOBA/Clash Royale style, with no fixed lanes:
+        (1) 2 turrets per side between midfield and base, placed by the match
+        seed, B mirrors A through the centre; ordinary entities (isTurret),
+        shoot nearest enemy in range, count as army for AllUnits.
+        (2) Aggro + leash for MixedPush/AllUnits: an enemy within sight (50)
+        pulls a unit off its goal; the chase ends after 60 from where it
+        started, then 2s of no aggro. (3) Threat avoidance for RushBase:
+        each tick its heading sums the pull to its goal with pushes away from
+        enemy turrets/units whose range it is inside, sliding past on its own
+        side. Kept on top of the flank waypoint (without it drone rushers
+        fell to 15%) · rejected lanes/bridges (fixed paths kill the vibe).
 
 PARKED (not rejected, not now)
   Multiplayer · unit carryover · base upgrades/repair/shields · alternate win
@@ -168,19 +179,23 @@ STATUS
   (#10) and random battle button (#11) seen working in a browser 09-24.
   Emergence animation removed (#8); checked in headless Chromium, not yet
   by the human.
-  Headless checks in the repo (#2): tests/run.mjs 49 checks pass;
+  Turrets, aggro/leash, threat avoidance (C27): headless only, not yet
+  seen by the human.
+  Headless checks in the repo (#2): tests/run.mjs 52 checks pass;
   tests/screenshot.mjs renders a random battle cleanly.
 
 NEXT UP
-  1. Fix whatever the first in-browser look at v17 turns up.
+  1. Look at turrets/aggro/avoidance in a browser; decide the round cap
+     (50% of AI fights now hit 90s; 150s cut that to ~15%, see KNOWN ISSUES).
   2. #5 balance: drones now lag (see KNOWN ISSUES) and 36% of fights time out.
   3. Real [60] match flow: multiple rounds, persistent base HP, income.
 
 KNOWN ISSUES / FACTS
-  - Balance (node tests/balance.mjs, 200 matches, seed 1), after the
-    RushBase flank: A 41%, B 24%, cap 36% (A leads 43 of 71 timeouts).
-    RushBase now wins A 23% / B 32% (was 4% / 27%). Decided fights ~57s.
-    Before the flank: A 46%, B 40%, cap 15%.
+  - Balance (node tests/balance.mjs, 200 matches, seed 1), after turrets,
+    aggro and avoidance (09-28): A 23%, B 27%, cap 50%. RushBase wins
+    A 25% / B 58%. Decided fights ~55s. Timeouts are mostly time: turret
+    stats barely moved them; a 150s cap gave ~15%. Before (09-25 flank):
+    A 41%, B 24%, cap 36%.
   - Shots ignore terrain and can pass through hills.
   - Custom drone units can be created but only the AI side can field them.
   - Side A acts first each tick (small first-mover edge); [40] gives B ties.
@@ -202,5 +217,6 @@ SESSION HISTORY (one line each; detail lives in the code comments)
   C20 random battle button (#11) · C21 removed deploy emergence (#8) ·
   C22 headless checks in tests/ (#2) · C23 random match seed ·
   C24 [85] balance harness (#4) · C25 RushBase flank + fire on the move (#5) ·
-  C26 link back to stilotto.github.io at the top of the page.
+  C26 link back to stilotto.github.io at the top of the page ·
+  C27 seeded turrets, aggro/leash, RushBase threat avoidance.
 ```
